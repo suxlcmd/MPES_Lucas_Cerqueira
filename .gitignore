@@ -1,0 +1,19 @@
+# Variáveis de ambiente (SEGREDO)
+.env
+
+# Arquivos e pastas do Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Arquivos do Streamlit
+.streamlit/
+
+# Arquivos do sistema operacional
+.DS_Store
+Thumbs.db
