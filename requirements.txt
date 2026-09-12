@@ -1,0 +1,7 @@
+streamlit
+pandas
+numpy
+scikit-learn
+torch
+azure-storage-blob
+python-dotenv
