@@ -5,3 +5,4 @@ scikit-learn
 torch
 azure-storage-blob
 python-dotenv
+pandas
