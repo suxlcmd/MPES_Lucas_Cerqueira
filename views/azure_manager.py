@@ -10,31 +10,53 @@ from theme import (
 
 
 DIR_ICONS = {
-    "raw-data": "🗂️",
-    "processed-data": "🧪",
-    "model-checkpoints": "💾",
-    "audit-artifacts": "🧾",
-    "configuration": "⚙️",
+    "raw-data": "bi-database",
+    "processed-data": "bi-funnel",
+    "model-checkpoints": "bi-cpu",
+    "audit-artifacts": "bi-file-earmark-check",
+    "configuration": "bi-gear",
 }
 
 
 DIR_LABELS = {
-    "raw-data": "Dados Brutos",
-    "processed-data": "Dados Processados",
-    "model-checkpoints": "Checkpoints do Modelo",
-    "audit-artifacts": "Artefatos de Auditoria",
+    "raw-data": "Dados brutos",
+    "processed-data": "Dados processados",
+    "model-checkpoints": "Checkpoints do modelo",
+    "audit-artifacts": "Artefatos de auditoria",
     "configuration": "Configuração",
 }
 
 
+def _file_rows(files, selected_dir):
+    """Monta a lista visual dos arquivos do Azure."""
+    rows = []
+
+    for filename in files:
+        rows.append(
+            f"""
+            <div class="mpes-file-row">
+                <span class="mpes-file-name">
+                    <i class="bi bi-file-earmark-text"></i>
+                    {filename}
+                </span>
+                <span class="mpes-file-directory">
+                    {selected_dir}
+                </span>
+            </div>
+            """
+        )
+
+    return "".join(rows)
+
+
 def view_azure_manager():
+    """Renderiza a subvisão corporativa do Azure Blob Storage."""
     apply_theme()
 
     page_header(
         "☁️",
         "Azure Blob Storage",
-        "Gestão centralizada de artefatos do pipeline MPES "
-        "(dados, modelos e auditoria)",
+        "Gestão de bases, checkpoints e artefatos do pipeline MPES.",
     )
 
     azure_client = AzureBlobClient()
@@ -42,14 +64,10 @@ def view_azure_manager():
     if not azure_client.container_client:
         st.markdown(
             """
-            <div class="mpes-card"
-                 style="border-left: 3px solid #FF4D6D;">
-                <span class="mpes-badge danger">
-                    CONEXÃO INDISPONÍVEL
-                </span>
-                <p style="margin-top: 10px; color: #8A93B8;
-                          font-size: 13px;">
-                    Não foi possível conectar ao Azure.
+            <div class="alert alert-danger shadow-sm" role="alert">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <strong>Conexão indisponível</strong>
+                <p class="mb-0 mt-2">
                     Verifique a variável
                     <code>AZURE_CONNECTION_STRING</code>
                     no arquivo <code>.env</code>.
@@ -60,37 +78,49 @@ def view_azure_manager():
         )
         return
 
-    col1, col2 = st.columns([1, 2], gap="large")
+    left_col, right_col = st.columns([1, 2], gap="large")
 
-    with col1:
-        section_header("1", "Diretório Lógico")
+    with left_col:
+        section_header("1", "Diretório lógico")
 
         selected_dir = st.radio(
             "Diretório",
             options=azure_client.logical_directories,
             format_func=lambda directory: (
-                f"{DIR_ICONS.get(directory, '📁')} "
                 f"{DIR_LABELS.get(directory, directory)}"
             ),
+            key="azure_selected_directory",
             label_visibility="collapsed",
+        )
+
+        icon_class = DIR_ICONS.get(
+            selected_dir,
+            "bi-folder",
         )
 
         st.markdown(
             f"""
-            <div class="mpes-card-light" style="margin-top: 8px;">
-                <span style="font-size: 12px; color: #8A93B8;">
-                    Container ativo
-                </span>
-                <br>
-                <code style="font-size: 13px;">
-                    {azure_client.container_name}/{selected_dir}/
-                </code>
+            <div class="card shadow-sm border-0 mb-3">
+                <div class="card-body">
+                    <div class="text-muted small mb-2">
+                        Diretório selecionado
+                    </div>
+                    <div class="fw-semibold">
+                        <i class="bi {icon_class}"></i>
+                        {DIR_LABELS.get(selected_dir, selected_dir)}
+                    </div>
+                    <div class="text-muted small mt-2">
+                        <code>
+                            {azure_client.container_name}/{selected_dir}/
+                        </code>
+                    </div>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    with col2:
+    with right_col:
         section_header(
             "2",
             f"Conteúdo: {DIR_LABELS.get(selected_dir, selected_dir)}",
@@ -102,93 +132,81 @@ def view_azure_manager():
             st.markdown(
                 status_badge(
                     f"{len(files)} arquivo(s)",
-                    "ok",
+                    "success",
                 ),
                 unsafe_allow_html=True,
             )
 
             st.markdown(
-                '<div style="height: 10px;"></div>',
+                "<div class='mt-3'></div>",
                 unsafe_allow_html=True,
             )
 
-            rows_html = ""
-
-            for filename in files:
-                rows_html += f"""
-                <div class="mpes-file-row">
-                    <span class="fname">{filename}</span>
-                    <span style="color: #8A93B8; font-size: 11px;">
-                        {selected_dir}
-                    </span>
-                </div>
-                """
-
-            st.markdown(rows_html, unsafe_allow_html=True)
-
+            st.markdown(
+                _file_rows(files, selected_dir),
+                unsafe_allow_html=True,
+            )
         else:
             st.markdown(
                 """
-                <div class="mpes-card"
-                     style="text-align: center; padding: 32px;">
-                    <div style="font-size: 32px; margin-bottom: 8px;">
-                        📭
+                <div class="card shadow-sm border-0 text-center py-5">
+                    <div class="card-body">
+                        <i class="bi bi-inbox fs-1 text-secondary"></i>
+                        <p class="text-muted mt-3 mb-0">
+                            Nenhum artefato encontrado neste diretório.
+                        </p>
                     </div>
-                    <span style="color: #8A93B8; font-size: 13px;">
-                        Nenhum artefato encontrado neste diretório.
-                    </span>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-    st.write("")
+    section_header("3", "Upload de novo artefato")
 
-    section_header("3", "Upload de Novo Artefato")
+    st.markdown(
+        '<div class="card shadow-sm border-0 mb-3">',
+        unsafe_allow_html=True,
+    )
 
-    with st.container():
+    uploaded_file = st.file_uploader(
+        "Selecione o arquivo para envio seguro",
+        key="azure_upload_file",
+    )
+
+    if uploaded_file is not None:
         st.markdown(
-            '<div class="mpes-card">',
+            f"""
+            <div class="d-flex gap-2 align-items-center mb-3">
+                {status_badge(uploaded_file.name, "neutral")}
+                {status_badge(
+                    f"{uploaded_file.size / 1024:.1f} KB",
+                    "neutral",
+                )}
+            </div>
+            """,
             unsafe_allow_html=True,
         )
 
-        uploaded_file = st.file_uploader(
-            "Selecione o arquivo para envio seguro",
-            label_visibility="visible",
-        )
+        if st.button(
+            "Enviar para a nuvem",
+            width="stretch",
+            key="azure_upload_button",
+        ):
+            with st.spinner("Enviando arquivo..."):
+                success = azure_client.upload_blob(
+                    selected_dir,
+                    uploaded_file.name,
+                    uploaded_file.getvalue(),
+                )
 
-        if uploaded_file is not None:
-            st.markdown(
-                f"""
-                <div style="margin: 10px 0;">
-                    {status_badge(uploaded_file.name, "neutral")}
-                    {status_badge(
-                        f"{uploaded_file.size / 1024:.1f} KB",
-                        "neutral",
-                    )}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            if success:
+                st.success(
+                    f"Arquivo salvo com sucesso em {selected_dir}."
+                )
+                st.rerun()
 
-            if st.button(
-                "Enviar para Nuvem",
-                width="content",
-            ):
-                with st.spinner("Enviando arquivo..."):
-                    file_bytes = uploaded_file.getvalue()
+    st.markdown("</div>", unsafe_allow_html=True)
 
-                    success = azure_client.upload_blob(
-                        selected_dir,
-                        uploaded_file.name,
-                        file_bytes,
-                    )
 
-                if success:
-                    st.success(
-                        f"Arquivo salvo com sucesso em "
-                        f"{selected_dir}!"
-                    )
-                    st.rerun()
-
-        st.markdown("</div>", unsafe_allow_html=True)
+if __name__ == "__main__":
+    view_azure_manager()

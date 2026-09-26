@@ -25,12 +25,15 @@ from theme import (
     metric_card,
     page_header,
     section_header,
+    status_badge,
 )
 
 
-PRIMARY = "#4F7CFF"
-ACCENT = "#00C2A8"
-DANGER = "#FF4D6D"
+PRIMARY = "#2563EB"
+ACCENT = "#0F766E"
+DANGER = "#B91C1C"
+SUCCESS = "#15803D"
+WARNING = "#B45309"
 
 
 try:
@@ -46,7 +49,7 @@ except ImportError:
 
 
 def _clean_test_csv(df_test):
-    """Limpa e converte o CSV utilizado na inferência."""
+    """Limpa e converte o CSV usado na inferência."""
     df_test = df_test.copy()
 
     if len(df_test.columns) == 1:
@@ -58,7 +61,12 @@ def _clean_test_csv(df_test):
             .str.contains(",", regex=False)
             .any()
         ):
-            expanded = df_test[column_name].astype(str).str.split(",", expand=True)
+            expanded = (
+                df_test[column_name]
+                .astype(str)
+                .str.split(",", expand=True)
+            )
+
             new_columns = str(column_name).split(",")
 
             if len(new_columns) == expanded.shape[1]:
@@ -82,12 +90,18 @@ def _clean_test_csv(df_test):
 
 
 def _show_training_metrics(logs_df):
-    """Exibe as perdas por cliente e rodada."""
+    """Exibe tabela e resumo das perdas de treinamento."""
     if logs_df.empty:
         st.info("Nenhum registro de treinamento disponível.")
         return
 
-    st.markdown("#### Valores das métricas por cliente e rodada")
+    st.markdown(
+        "<div class='card shadow-sm border-0 p-3 mb-3'>"
+        "<div class='fw-semibold text-primary mb-2'>"
+        "Valores das métricas por cliente e rodada"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     table = logs_df.rename(
         columns={
@@ -108,6 +122,8 @@ def _show_training_metrics(logs_df):
         hide_index=True,
     )
 
+    st.markdown("</div>", unsafe_allow_html=True)
+
     summary = (
         logs_df
         .groupby("round")[["loss_g", "loss_d"]]
@@ -120,8 +136,20 @@ def _show_training_metrics(logs_df):
     ]
     summary.index.name = "Rodada"
 
-    st.markdown("#### Resumo estatístico por rodada")
-    st.dataframe(summary.round(6), width="stretch")
+    st.markdown(
+        "<div class='card shadow-sm border-0 p-3 mb-3'>"
+        "<div class='fw-semibold text-primary mb-2'>"
+        "Resumo estatístico por rodada"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.dataframe(
+        summary.round(6),
+        width="stretch",
+    )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _show_training_charts(logs_df):
@@ -141,30 +169,62 @@ def _show_training_charts(logs_df):
         )
     )
 
-    st.markdown("#### Evolução das perdas")
-    st.line_chart(loss_summary, color=[PRIMARY, DANGER])
+    st.markdown(
+        "<div class='card shadow-sm border-0 p-3 mb-3'>"
+        "<div class='fw-semibold text-primary mb-3'>"
+        "Evolução das perdas"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.line_chart(
+        loss_summary,
+        color=[PRIMARY, DANGER],
+    )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
-        st.markdown("**Loss médio do gerador por rodada**")
+        st.markdown(
+            "<div class='card shadow-sm border-0 p-3 mb-3'>"
+            "<div class='small text-secondary mb-2'>"
+            "Loss médio do gerador"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
         st.bar_chart(
             loss_summary[["Loss Gerador"]],
             color=PRIMARY,
         )
 
+        st.markdown("</div>", unsafe_allow_html=True)
+
     with chart_col2:
-        st.markdown("**Loss médio do discriminador por rodada**")
+        st.markdown(
+            "<div class='card shadow-sm border-0 p-3 mb-3'>"
+            "<div class='small text-secondary mb-2'>"
+            "Loss médio do discriminador"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
         st.bar_chart(
             loss_summary[["Loss Discriminador"]],
             color=DANGER,
         )
 
+        st.markdown("</div>", unsafe_allow_html=True)
+
 
 def _prepare_client_data(X_scaled, y, num_clients):
     """Divide os dados entre os clientes federados."""
     if num_clients <= 0:
-        raise ValueError("O número de clientes deve ser maior que zero.")
+        raise ValueError(
+            "O número de clientes deve ser maior que zero."
+        )
 
     if len(X_scaled) == 0:
         raise ValueError("A base de dados está vazia.")
@@ -190,7 +250,7 @@ def _prepare_client_data(X_scaled, y, num_clients):
 
 
 def _save_processed_data(azure_client, original_filename, X_scaled):
-    """Salva os dados processados no Azure Blob Storage."""
+    """Salva os dados processados no Azure."""
     csv_buffer = io.BytesIO()
     pd.DataFrame(X_scaled).to_csv(csv_buffer, index=False)
 
@@ -230,39 +290,8 @@ def _calculate_threshold(y_true, anomaly_scores):
     return float(thresholds[best_index])
 
 
-def _show_inference_metrics(metrics):
-    """Exibe as métricas da inferência."""
-    if not metrics:
-        return
-
-    columns = st.columns(min(len(metrics), 8))
-
-    for column, (name, value) in zip(columns, metrics.items()):
-        display_value = (
-            f"{value:.4f}"
-            if isinstance(value, (float, np.floating))
-            else str(value)
-        )
-
-        with column:
-            st.markdown(
-                metric_card(
-                    name,
-                    display_value,
-                    "",
-                    "#E4E8FA",
-                ),
-                unsafe_allow_html=True,
-            )
-
-
 def _resolve_discriminator(model_or_trainer):
-    """
-    Retorna sempre o objeto Discriminator.
-
-    O estado da sessão pode conter tanto o trainer completo quanto o
-    discriminador diretamente. Esta função trata os dois formatos.
-    """
+    """Aceita um trainer ou um Discriminator diretamente."""
     discriminator = (
         model_or_trainer.D
         if hasattr(model_or_trainer, "D")
@@ -316,9 +345,13 @@ def _run_inference(df_test, model_or_trainer, preprocessor):
             anomaly_scores - score_min
         ) / (score_max - score_min)
 
-    anomaly_scores = np.clip(anomaly_scores, 0.0, 1.0)
-    elapsed_time = time.time() - start_time
+    anomaly_scores = np.clip(
+        anomaly_scores,
+        0.0,
+        1.0,
+    )
 
+    elapsed_time = time.time() - start_time
     transactions_per_second = (
         len(df_clean) / elapsed_time
         if elapsed_time > 0
@@ -340,7 +373,9 @@ def _run_inference(df_test, model_or_trainer, preprocessor):
         anomaly_scores,
     )
 
-    predictions = (anomaly_scores >= threshold).astype(int)
+    predictions = (
+        anomaly_scores >= threshold
+    ).astype(int)
 
     result_df = df_clean.copy()
     result_df["Score Anomalia"] = anomaly_scores * 100
@@ -354,7 +389,10 @@ def _run_inference(df_test, model_or_trainer, preprocessor):
         and len(y_test) == len(predictions)
     ):
         metrics = {
-            "Acurácia": accuracy_score(y_test, predictions),
+            "Acurácia": accuracy_score(
+                y_test,
+                predictions,
+            ),
             "Precisão": precision_score(
                 y_test,
                 predictions,
@@ -390,23 +428,54 @@ def _run_inference(df_test, model_or_trainer, preprocessor):
     )
 
 
+def _show_inference_metrics(metrics):
+    """Exibe as métricas da inferência em cards corporativos."""
+    if not metrics:
+        return
+
+    st.markdown(
+        "<div class='row g-3 mb-3'>",
+        unsafe_allow_html=True,
+    )
+
+    columns = st.columns(min(len(metrics), 4))
+
+    for column, (name, value) in zip(columns, metrics.items()):
+        display_value = (
+            f"{value:.4f}"
+            if isinstance(value, (float, np.floating))
+            else str(value)
+        )
+
+        with column:
+            st.markdown(
+                metric_card(
+                    name,
+                    display_value,
+                    "métrica calculada",
+                    PRIMARY,
+                ),
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def _render_inference_section():
-    """Renderiza a seção de inferência."""
+    """Renderiza a seção de teste e inferência."""
     if "trained_model" not in st.session_state:
         return
 
     section_header(
         "4",
-        "Detecção de Anomalias e Inferência",
+        "Detecção de anomalias e inferência",
     )
 
     st.markdown(
         """
-        <div class="mpes-card">
-            <span style="color: #8A93B8; font-size: 13px;">
-                Faça upload de um arquivo de transações para verificar
-                possíveis fraudes usando o modelo global.
-            </span>
+        <div class="alert alert-primary shadow-sm" role="alert">
+            <i class="bi bi-shield-check"></i>
+            Faça upload de um CSV de transações para avaliar o modelo global.
         </div>
         """,
         unsafe_allow_html=True,
@@ -422,7 +491,7 @@ def _render_inference_section():
         return
 
     if not st.button(
-        "Executar Inferência do Discriminador",
+        "Executar inferência do discriminador",
         width="stretch",
         key="technical_inference_button",
     ):
@@ -467,17 +536,25 @@ def _render_inference_section():
         return
 
     if metrics:
-        section_header("5", "Métricas de Inferência")
+        section_header("5", "Métricas de inferência")
         _show_inference_metrics(metrics)
 
     section_header(
         "6",
-        "Distribuição e Transações Priorizadas",
+        "Distribuição e transações priorizadas",
     )
 
     chart_col, table_col = st.columns([1, 2], gap="large")
 
     with chart_col:
+        st.markdown(
+            "<div class='card shadow-sm border-0 p-3'>"
+            "<div class='fw-semibold text-primary mb-3'>"
+            "Distribuição do escore"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
         counts, bins = np.histogram(
             result_df["Score Anomalia"],
             bins=30,
@@ -488,9 +565,22 @@ def _render_inference_section():
             index=bins[:-1],
         )
 
-        st.area_chart(chart_df, color=PRIMARY)
+        st.area_chart(
+            chart_df,
+            color=PRIMARY,
+        )
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with table_col:
+        st.markdown(
+            "<div class='card shadow-sm border-0 p-3'>"
+            "<div class='fw-semibold text-primary mb-3'>"
+            "Transações priorizadas"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
         st.dataframe(
             result_df.sort_values(
                 "Score Anomalia",
@@ -499,22 +589,24 @@ def _render_inference_section():
             width="stretch",
         )
 
+        st.markdown("</div>", unsafe_allow_html=True)
 
-def render_training():
-    """Renderiza a view completa de treinamento."""
+
+def view_training():
+    """Renderiza a view corporativa de treinamento e inferência."""
     apply_theme()
 
     page_header(
         "⚙️",
-        "Treinamento Federado STEP-GAN",
-        "Orquestração segura via SMPC e detecção de anomalias em transações",
+        "Treinamento e Inferência",
+        "Treinamento federado, análise de transações e detecção de anomalias.",
     )
 
     azure_client = AzureBlobClient()
 
     section_header(
         "1",
-        "Seleção de Dados de Treinamento",
+        "Seleção de dados de treinamento",
     )
 
     raw_files = azure_client.list_blobs("raw-data")
@@ -522,13 +614,11 @@ def render_training():
     if not raw_files:
         st.markdown(
             """
-            <div class="mpes-card"
-                 style="border-left: 3px solid #FFB020;">
-                <span class="mpes-badge warning">SEM DADOS</span>
-                <p style="margin-top: 10px; color: #8A93B8;
-                          font-size: 13px;">
-                    Nenhum arquivo encontrado em <code>raw-data/</code>.
-                    Vá até o Azure Storage Manager e envie um CSV.
+            <div class="alert alert-warning shadow-sm" role="alert">
+                <i class="bi bi-database-exclamation"></i>
+                <strong>Nenhum arquivo encontrado.</strong>
+                <p class="mb-0 mt-2">
+                    Envie um CSV pelo Azure Blob Storage antes de iniciar.
                 </p>
             </div>
             """,
@@ -544,7 +634,12 @@ def render_training():
 
     section_header(
         "2",
-        "Configuração da Orquestração Federada",
+        "Configuração da orquestração federada",
+    )
+
+    st.markdown(
+        "<div class='card shadow-sm border-0 p-3 mb-3'>",
+        unsafe_allow_html=True,
     )
 
     with st.form("training_config_form"):
@@ -552,14 +647,14 @@ def render_training():
 
         with col1:
             num_clients = st.slider(
-                "Número de Clientes/Silos",
+                "Número de clientes/silos",
                 min_value=2,
                 max_value=10,
                 value=3,
             )
 
             num_rounds = st.number_input(
-                "Rodadas Federadas",
+                "Rodadas federadas",
                 min_value=1,
                 max_value=50,
                 value=3,
@@ -567,20 +662,22 @@ def render_training():
 
         with col2:
             latent_dim = st.selectbox(
-                "Dimensão Latente Z",
+                "Dimensão latente Z",
                 [64, 100, 128],
                 index=1,
             )
 
             batch_size = st.selectbox(
-                "Tamanho do Lote",
+                "Tamanho do lote",
                 [128, 256, 512],
                 index=2,
             )
 
         submitted = st.form_submit_button(
-            "Iniciar Orquestração Federada",
+            "Iniciar orquestração federada",
         )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if submitted:
         _run_training(
@@ -593,10 +690,12 @@ def render_training():
         )
 
     if "training_logs" in st.session_state:
-        section_header("3", "Métricas do Treinamento")
+        section_header("3", "Métricas do treinamento")
+
         logs_df = pd.DataFrame(
             st.session_state.training_logs
         )
+
         _show_training_metrics(logs_df)
         _show_training_charts(logs_df)
 
@@ -673,14 +772,11 @@ def _run_training(
         with status_container.container():
             st.markdown(
                 f"""
-                <div class="mpes-card-light">
-                    <span class="mpes-badge ok">
-                        Rodada {round_number}/{num_rounds}
-                    </span>
-                    <span style="margin-left: 8px; color: #8A93B8;
-                                 font-size: 13px;">
-                        Treinamento local e agregação segura via SMPC
-                        em andamento...
+                <div class="alert alert-primary shadow-sm" role="alert">
+                    <i class="bi bi-arrow-repeat"></i>
+                    <strong>Rodada {round_number}/{num_rounds}</strong>
+                    <span class="ms-2">
+                        Treinamento local e agregação SMPC em andamento.
                     </span>
                 </div>
                 """,
@@ -696,9 +792,10 @@ def _run_training(
 
         progress_bar.progress(round_number / num_rounds)
 
-    # Salva o discriminador diretamente; a inferência aceita também
-    # o trainer completo por compatibilidade.
+    # O estado guarda o discriminador diretamente.
+    # A inferência trata também o caso de trainer completo.
     st.session_state.trained_model = trainer.D
+    st.session_state.preprocessor = preprocessor
     st.session_state.training_metadata = {
         "num_rounds": num_rounds,
         "num_clients": len(clients_X),
@@ -742,21 +839,41 @@ Status: Treinamento Concluído
         checkpoint_content.encode("utf-8"),
     )
 
+    st.markdown(
+        "<div class='card shadow-sm border-0 p-3 mb-3'>",
+        unsafe_allow_html=True,
+    )
+
     if uploaded:
-        st.success(
-            "Treinamento concluído. Checkpoint salvo em "
-            f"model-checkpoints/{checkpoint_filename}."
+        st.markdown(
+            status_badge(
+                "TREINAMENTO CONCLUÍDO",
+                "success",
+            ),
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            f"Checkpoint salvo em model-checkpoints/"
+            f"{checkpoint_filename}."
         )
     else:
-        st.warning(
-            "Treinamento concluído, mas não foi possível salvar "
-            "o checkpoint no Azure."
+        st.markdown(
+            status_badge(
+                "TREINAMENTO CONCLUÍDO SEM CHECKPOINT",
+                "warning",
+            ),
+            unsafe_allow_html=True,
         )
+        st.caption(
+            "O treinamento terminou, mas o checkpoint não pôde ser salvo."
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 # Compatibilidade com o nome usado anteriormente.
-view_training = render_training
+render_training = view_training
 
 
 if __name__ == "__main__":
-    render_training()
+    view_training()

@@ -1,44 +1,59 @@
 """
-Tema visual corporativo do MPES.
+Tema corporativo MPES com Bootstrap 5.
 
-Este arquivo centraliza o estilo da aplicação Streamlit:
-- paleta institucional;
-- cabeçalhos e seções;
-- cartões de métricas;
-- botões;
-- tabelas;
-- formulários;
+O Bootstrap é utilizado para:
+- grid responsivo;
+- cards;
+- badges;
 - alertas;
-- navegação e componentes de upload.
+- espaçamentos;
+- identidade visual corporativa.
+
+Os componentes interativos continuam sendo controlados pelo Streamlit.
 """
 
 import streamlit as st
 
 
-PRIMARY = "#2563EB"
+PRIMARY = "#1D4ED8"
 PRIMARY_DARK = "#1E3A8A"
 PRIMARY_LIGHT = "#DBEAFE"
 ACCENT = "#0F766E"
 SUCCESS = "#15803D"
 DANGER = "#B91C1C"
 WARNING = "#B45309"
+
 BG_APP = "#F4F7FB"
 BG_CARD = "#FFFFFF"
-BG_MUTED = "#F8FAFC"
 TEXT = "#172033"
 TEXT_MUTED = "#64748B"
 BORDER = "#E2E8F0"
 
 
 def apply_theme():
-    """Aplica o tema corporativo global da aplicação."""
+    """
+    Injeta Bootstrap e o tema corporativo global.
+    """
+
+    st.markdown(
+        """
+        <link
+            href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
+            rel="stylesheet"
+            crossorigin="anonymous"
+        >
+
+        <link
+            rel="stylesheet"
+            href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+        >
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.markdown(
         f"""
         <style>
-        @import url(
-            'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap'
-        );
-
         :root {{
             --mpes-primary: {PRIMARY};
             --mpes-primary-dark: {PRIMARY_DARK};
@@ -49,20 +64,32 @@ def apply_theme():
             --mpes-warning: {WARNING};
             --mpes-bg: {BG_APP};
             --mpes-card: {BG_CARD};
-            --mpes-muted: {BG_MUTED};
             --mpes-text: {TEXT};
             --mpes-text-muted: {TEXT_MUTED};
             --mpes-border: {BORDER};
+
+            --bs-primary: {PRIMARY};
+            --bs-primary-rgb: 29, 78, 216;
+            --bs-body-bg: {BG_APP};
+            --bs-body-color: {TEXT};
+            --bs-border-color: {BORDER};
+            --bs-border-radius: 0.75rem;
         }}
 
-        html, body, [class*="css"] {{
-            font-family: Inter, -apple-system, BlinkMacSystemFont,
-                         "Segoe UI", sans-serif;
+        html,
+        body,
+        [class*="css"] {{
+            font-family:
+                Inter,
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                sans-serif;
         }}
 
         .stApp {{
-            background: {BG_APP};
-            color: {TEXT};
+            background: var(--mpes-bg);
+            color: var(--mpes-text);
         }}
 
         .main .block-container {{
@@ -77,36 +104,58 @@ def apply_theme():
 
         [data-testid="stSidebar"] {{
             background: #FFFFFF;
-            border-right: 1px solid {BORDER};
+            border-right: 1px solid var(--mpes-border);
         }}
 
         [data-testid="stSidebar"] > div:first-child {{
-            padding-top: 1.5rem;
+            padding-top: 1.25rem;
         }}
 
-        [data-testid="stSidebar"] h1,
-        [data-testid="stSidebar"] h2,
-        [data-testid="stSidebar"] h3 {{
-            color: {PRIMARY_DARK};
+        .mpes-brand {{
+            padding: 8px 6px 22px 6px;
+            border-bottom: 1px solid var(--mpes-border);
+            margin-bottom: 20px;
         }}
 
-        [data-testid="stMarkdownContainer"] p,
-        [data-testid="stMarkdownContainer"] li {{
-            color: {TEXT};
+        .mpes-brand-icon {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 42px;
+            height: 42px;
+            margin-bottom: 10px;
+            border-radius: 10px;
+            background: var(--mpes-primary-light);
+            color: var(--mpes-primary-dark);
+            font-size: 23px;
+        }}
+
+        .mpes-brand-title {{
+            color: var(--mpes-primary-dark);
+            font-size: 20px;
+            font-weight: 800;
+            letter-spacing: -0.4px;
+        }}
+
+        .mpes-brand-subtitle {{
+            margin-top: 3px;
+            color: var(--mpes-text-muted);
+            font-size: 11px;
         }}
 
         .mpes-page-header {{
             display: flex;
             align-items: center;
             gap: 16px;
-            padding: 22px 28px;
             margin-bottom: 26px;
+            padding: 22px 28px;
             border-radius: 14px;
-            background: linear-gradient(
-                135deg,
-                {PRIMARY_DARK} 0%,
-                {PRIMARY} 100%
-            );
+            background:
+                linear-gradient(
+                    135deg,
+                    var(--mpes-primary-dark),
+                    var(--mpes-primary)
+                );
             box-shadow: 0 8px 24px rgba(30, 58, 138, 0.18);
         }}
 
@@ -118,20 +167,20 @@ def apply_theme():
             height: 48px;
             border-radius: 12px;
             background: rgba(255, 255, 255, 0.16);
+            color: #FFFFFF;
             font-size: 27px;
         }}
 
-        .mpes-page-header .titles h1 {{
+        .mpes-page-header h1 {{
             margin: 0;
             color: #FFFFFF;
             font-size: 24px;
             font-weight: 800;
-            letter-spacing: -0.4px;
         }}
 
-        .mpes-page-header .titles p {{
+        .mpes-page-header p {{
             margin: 4px 0 0 0;
-            color: rgba(255, 255, 255, 0.84);
+            color: rgba(255, 255, 255, 0.85);
             font-size: 13px;
         }}
 
@@ -141,7 +190,7 @@ def apply_theme():
             gap: 10px;
             margin: 28px 0 14px 0;
             padding-bottom: 9px;
-            border-bottom: 1px solid {BORDER};
+            border-bottom: 1px solid var(--mpes-border);
         }}
 
         .mpes-section .step-badge {{
@@ -150,9 +199,8 @@ def apply_theme():
             justify-content: center;
             width: 25px;
             height: 25px;
-            flex-shrink: 0;
             border-radius: 50%;
-            background: {PRIMARY};
+            background: var(--mpes-primary);
             color: #FFFFFF;
             font-size: 12px;
             font-weight: 800;
@@ -160,7 +208,7 @@ def apply_theme():
 
         .mpes-section h3 {{
             margin: 0;
-            color: {PRIMARY_DARK};
+            color: var(--mpes-primary-dark);
             font-size: 17px;
             font-weight: 750;
         }}
@@ -168,81 +216,56 @@ def apply_theme():
         .mpes-card {{
             margin-bottom: 14px;
             padding: 20px 22px;
-            border: 1px solid {BORDER};
+            border: 1px solid var(--mpes-border);
             border-radius: 12px;
-            background: {BG_CARD};
+            background: var(--mpes-card);
             box-shadow: 0 3px 12px rgba(15, 23, 42, 0.04);
         }}
 
-        .mpes-card-light {{
-            margin-bottom: 10px;
-            padding: 16px 18px;
-            border: 1px solid {BORDER};
-            border-left: 3px solid {PRIMARY};
-            border-radius: 10px;
-            background: {BG_MUTED};
+        .mpes-card-title {{
+            margin-bottom: 6px;
+            color: var(--mpes-primary-dark);
+            font-size: 16px;
+            font-weight: 750;
         }}
 
-        .mpes-metric {{
-            min-height: 106px;
-            padding: 17px 18px;
-            border: 1px solid {BORDER};
+        .mpes-card-description {{
+            margin-bottom: 0;
+            color: var(--mpes-text-muted);
+            font-size: 13px;
+            line-height: 1.6;
+        }}
+
+        .mpes-metric-card {{
+            height: 100%;
+            min-height: 112px;
+            padding: 18px;
+            border: 1px solid var(--mpes-border);
             border-radius: 12px;
-            background: {BG_CARD};
+            background: #FFFFFF;
             box-shadow: 0 3px 12px rgba(15, 23, 42, 0.04);
         }}
 
-        .mpes-metric .label {{
+        .mpes-metric-label {{
             margin-bottom: 8px;
-            color: {TEXT_MUTED};
+            color: var(--mpes-text-muted);
             font-size: 11px;
             font-weight: 700;
             letter-spacing: 0.45px;
             text-transform: uppercase;
         }}
 
-        .mpes-metric .value {{
-            font-size: 26px;
+        .mpes-metric-value {{
+            color: var(--mpes-primary);
+            font-size: 27px;
             font-weight: 800;
-            line-height: 1.15;
+            line-height: 1.1;
         }}
 
-        .mpes-metric .delta {{
+        .mpes-metric-delta {{
             margin-top: 6px;
-            color: {TEXT_MUTED};
+            color: var(--mpes-text-muted);
             font-size: 12px;
-            font-weight: 600;
-        }}
-
-        .mpes-badge {{
-            display: inline-flex;
-            align-items: center;
-            gap: 5px;
-            padding: 5px 11px;
-            border-radius: 999px;
-            font-size: 11px;
-            font-weight: 750;
-            letter-spacing: 0.2px;
-        }}
-
-        .mpes-badge-ok {{
-            background: #DCFCE7;
-            color: {SUCCESS};
-        }}
-
-        .mpes-badge-danger {{
-            background: #FEE2E2;
-            color: {DANGER};
-        }}
-
-        .mpes-badge-warning {{
-            background: #FEF3C7;
-            color: {WARNING};
-        }}
-
-        .mpes-badge-neutral {{
-            background: #E2E8F0;
-            color: {TEXT_MUTED};
         }}
 
         .mpes-file-row {{
@@ -250,28 +273,74 @@ def apply_theme():
             align-items: center;
             justify-content: space-between;
             gap: 12px;
-            margin-bottom: 6px;
-            padding: 11px 14px;
-            border: 1px solid {BORDER};
+            margin-bottom: 7px;
+            padding: 12px 14px;
+            border: 1px solid var(--mpes-border);
             border-radius: 9px;
-            background: {BG_MUTED};
-            font-size: 13px;
+            background: #F8FAFC;
         }}
 
-        .mpes-file-row .fname {{
+        .mpes-file-name {{
             overflow: hidden;
-            color: {TEXT};
+            color: var(--mpes-text);
             font-family: Consolas, monospace;
+            font-size: 13px;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }}
+
+        .mpes-file-directory {{
+            color: var(--mpes-text-muted);
+            font-size: 11px;
+        }}
+
+        .mpes-status {{
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 11px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 750;
+        }}
+
+        .mpes-status-success {{
+            background: #DCFCE7;
+            color: var(--mpes-success);
+        }}
+
+        .mpes-status-danger {{
+            background: #FEE2E2;
+            color: var(--mpes-danger);
+        }}
+
+        .mpes-status-warning {{
+            background: #FEF3C7;
+            color: var(--mpes-warning);
+        }}
+
+        .mpes-status-neutral {{
+            background: #E2E8F0;
+            color: var(--mpes-text-muted);
+        }}
+
+        .mpes-trust-strip {{
+            margin-top: 24px;
+            padding: 15px 18px;
+            border: 1px solid var(--mpes-border);
+            border-radius: 10px;
+            background: #FFFFFF;
+            color: var(--mpes-text-muted);
+            font-size: 12px;
+            text-align: center;
         }}
 
         div.stButton > button,
         div.stFormSubmitButton > button {{
             min-height: 42px;
-            border: 1px solid {PRIMARY};
+            border: 1px solid var(--mpes-primary);
             border-radius: 8px;
-            background: {PRIMARY};
+            background: var(--mpes-primary);
             color: #FFFFFF;
             font-size: 13px;
             font-weight: 700;
@@ -281,26 +350,15 @@ def apply_theme():
 
         div.stButton > button:hover,
         div.stFormSubmitButton > button:hover {{
-            border-color: {PRIMARY_DARK};
-            background: {PRIMARY_DARK};
+            border-color: var(--mpes-primary-dark);
+            background: var(--mpes-primary-dark);
             color: #FFFFFF;
             transform: translateY(-1px);
-            box-shadow: 0 6px 15px rgba(30, 58, 138, 0.22);
-        }}
-
-        div.stButton > button:focus,
-        div.stFormSubmitButton > button:focus {{
-            border-color: {PRIMARY};
-            color: #FFFFFF;
-        }}
-
-        input, textarea, [data-baseweb="select"] > div {{
-            border-radius: 8px !important;
         }}
 
         [data-testid="stDataFrame"] {{
             overflow: hidden;
-            border: 1px solid {BORDER};
+            border: 1px solid var(--mpes-border);
             border-radius: 10px;
         }}
 
@@ -308,19 +366,19 @@ def apply_theme():
             padding: 8px;
             border: 1px dashed #CBD5E1;
             border-radius: 10px;
-            background: {BG_MUTED};
+            background: #F8FAFC;
         }}
 
         [data-testid="stAlert"] {{
             border-radius: 9px;
         }}
 
-        hr {{
-            border-color: {BORDER};
+        [data-testid="stMetricValue"] {{
+            font-weight: 800;
         }}
 
         .stProgress > div > div > div > div {{
-            background: {PRIMARY};
+            background: var(--mpes-primary);
         }}
         </style>
         """,
@@ -329,7 +387,7 @@ def apply_theme():
 
 
 def page_header(icon: str, title: str, subtitle: str = ""):
-    """Renderiza o cabeçalho corporativo da página."""
+    """Renderiza o cabeçalho principal da página."""
     subtitle_html = (
         f"<p>{subtitle}</p>"
         if subtitle
@@ -340,7 +398,7 @@ def page_header(icon: str, title: str, subtitle: str = ""):
         f"""
         <div class="mpes-page-header">
             <div class="icon">{icon}</div>
-            <div class="titles">
+            <div>
                 <h1>{title}</h1>
                 {subtitle_html}
             </div>
@@ -351,7 +409,7 @@ def page_header(icon: str, title: str, subtitle: str = ""):
 
 
 def section_header(step_number, title: str):
-    """Renderiza um título de seção numerado."""
+    """Renderiza o título de uma seção."""
     st.markdown(
         f"""
         <div class="mpes-section">
@@ -364,14 +422,19 @@ def section_header(step_number, title: str):
 
 
 def status_badge(text: str, kind: str = "neutral"):
-    """Retorna um badge HTML de status."""
-    allowed = {"ok", "danger", "warning", "neutral"}
+    """Retorna um badge corporativo em HTML."""
+    kind_map = {
+        "ok": "success",
+        "success": "success",
+        "danger": "danger",
+        "warning": "warning",
+        "neutral": "neutral",
+    }
 
-    if kind not in allowed:
-        kind = "neutral"
+    css_kind = kind_map.get(kind, "neutral")
 
     return (
-        f'<span class="mpes-badge mpes-badge-{kind}">'
+        f'<span class="mpes-status mpes-status-{css_kind}">'
         f"{text}</span>"
     )
 
@@ -380,21 +443,36 @@ def metric_card(
     label: str,
     value: str,
     delta: str = "",
-    color: str = "#E4E8FA",
+    color: str = PRIMARY,
 ):
-    """Retorna um cartão HTML de métrica."""
+    """Retorna um cartão de métrica em HTML."""
     delta_html = (
-        f'<div class="delta">{delta}</div>'
+        f'<div class="mpes-metric-delta">{delta}</div>'
         if delta
         else ""
     )
 
     return f"""
-    <div class="mpes-metric">
-        <div class="label">{label}</div>
-        <div class="value" style="color: {color};">
+    <div class="mpes-metric-card">
+        <div class="mpes-metric-label">{label}</div>
+        <div class="mpes-metric-value" style="color: {color};">
             {value}
         </div>
         {delta_html}
+    </div>
+    """
+
+
+def brand_block():
+    """Retorna o bloco de identidade visual da barra lateral."""
+    return """
+    <div class="mpes-brand">
+        <div class="mpes-brand-icon">
+            <i class="bi bi-shield-check"></i>
+        </div>
+        <div class="mpes-brand-title">MPES</div>
+        <div class="mpes-brand-subtitle">
+            Fraud Detection Platform
+        </div>
     </div>
     """
