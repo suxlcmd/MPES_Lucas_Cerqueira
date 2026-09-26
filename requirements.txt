@@ -1,8 +1,9 @@
-streamlit
-pandas
-numpy
-scikit-learn
-torch
-azure-storage-blob
-python-dotenv
-pandas
+# Rodas do PyTorch só para CPU: o App Service não tem GPU e a versão CUDA ocupa vários GB a mais.
+--extra-index-url https://download.pytorch.org/whl/cpu
+streamlit>=1.50
+pandas>=2.2
+numpy>=1.26
+scikit-learn>=1.4
+torch>=2.3
+azure-storage-blob>=12.19
+python-dotenv>=1.0

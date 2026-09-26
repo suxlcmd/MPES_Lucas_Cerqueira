@@ -12,6 +12,8 @@ O Bootstrap é utilizado para:
 Os componentes interativos continuam sendo controlados pelo Streamlit.
 """
 
+import html
+
 import streamlit as st
 
 
@@ -28,6 +30,11 @@ BG_CARD = "#FFFFFF"
 TEXT = "#172033"
 TEXT_MUTED = "#64748B"
 BORDER = "#E2E8F0"
+
+
+def esc(value) -> str:
+    """Escapa texto dinâmico (nomes de arquivos, datasets, valores) antes de inseri-lo em HTML."""
+    return html.escape(str(value), quote=True)
 
 
 def apply_theme():
@@ -324,6 +331,25 @@ def apply_theme():
             color: var(--mpes-text-muted);
         }}
 
+        .mpes-metric-value {{
+            overflow-wrap: anywhere;
+        }}
+
+        .mpes-note {{
+            margin: 6px 0 14px 0;
+            padding: 10px 14px;
+            border-left: 3px solid var(--mpes-primary);
+            border-radius: 6px;
+            background: #EEF2FF;
+            color: var(--mpes-text);
+            font-size: 13px;
+        }}
+
+        .mpes-note-warning {{
+            border-left-color: var(--mpes-warning);
+            background: #FFFBEB;
+        }}
+
         .mpes-trust-strip {{
             margin-top: 24px;
             padding: 15px 18px;
@@ -389,7 +415,7 @@ def apply_theme():
 def page_header(icon: str, title: str, subtitle: str = ""):
     """Renderiza o cabeçalho principal da página."""
     subtitle_html = (
-        f"<p>{subtitle}</p>"
+        f"<p>{esc(subtitle)}</p>"
         if subtitle
         else ""
     )
@@ -399,7 +425,7 @@ def page_header(icon: str, title: str, subtitle: str = ""):
         <div class="mpes-page-header">
             <div class="icon">{icon}</div>
             <div>
-                <h1>{title}</h1>
+                <h1>{esc(title)}</h1>
                 {subtitle_html}
             </div>
         </div>
@@ -413,8 +439,8 @@ def section_header(step_number, title: str):
     st.markdown(
         f"""
         <div class="mpes-section">
-            <div class="step-badge">{step_number}</div>
-            <h3>{title}</h3>
+            <div class="step-badge">{esc(step_number)}</div>
+            <h3>{esc(title)}</h3>
         </div>
         """,
         unsafe_allow_html=True,
@@ -435,7 +461,7 @@ def status_badge(text: str, kind: str = "neutral"):
 
     return (
         f'<span class="mpes-status mpes-status-{css_kind}">'
-        f"{text}</span>"
+        f"{esc(text)}</span>"
     )
 
 
@@ -447,16 +473,16 @@ def metric_card(
 ):
     """Retorna um cartão de métrica em HTML."""
     delta_html = (
-        f'<div class="mpes-metric-delta">{delta}</div>'
+        f'<div class="mpes-metric-delta">{esc(delta)}</div>'
         if delta
         else ""
     )
 
     return f"""
     <div class="mpes-metric-card">
-        <div class="mpes-metric-label">{label}</div>
-        <div class="mpes-metric-value" style="color: {color};">
-            {value}
+        <div class="mpes-metric-label">{esc(label)}</div>
+        <div class="mpes-metric-value" style="color: {esc(color)};">
+            {esc(value)}
         </div>
         {delta_html}
     </div>
@@ -476,3 +502,8 @@ def brand_block():
         </div>
     </div>
     """
+
+def note(text: str, kind: str = "info"):
+    """Renderiza uma nota explicativa curta (texto escapado)."""
+    extra = " mpes-note-warning" if kind == "warning" else ""
+    st.markdown(f'<div class="mpes-note{extra}">{esc(text)}</div>', unsafe_allow_html=True)

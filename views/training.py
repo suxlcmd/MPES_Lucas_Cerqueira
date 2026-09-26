@@ -1,879 +1,412 @@
+"""Subvisão de treinamento federado, gestão de modelos e análise de transações (Camada 1)."""
+
 import datetime
-import io
-import time
+import json
+import uuid
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
-from sklearn.metrics import (
-    accuracy_score,
-    average_precision_score,
-    f1_score,
-    precision_recall_curve,
-    precision_score,
-    recall_score,
-    roc_auc_score,
+from cloud.azure_blob_client import read_csv_bytes
+from orchestration.audit_log import sha256_hex
+from orchestration.data_preprocessor import SCHEMA_LABELS, clean_raw_dataframe, detect_schema, detect_target
+from orchestration.inference_service import RISK_LEVELS, TRIAGE_STATUS, score_transactions
+from orchestration.model_bundle import ModelBundle
+from orchestration.training_service import TrainingSettings, run_training
+from theme import note, page_header, section_header, status_badge
+from views.common import (
+    ACCENT,
+    DANGER,
+    MUTED,
+    PRIMARY,
+    WARNING,
+    current_user,
+    get_azure_client,
+    metric_grid,
+    model_metric_items,
+    record_event,
 )
 
-from cloud.azure_blob_client import AzureBlobClient
-from ml_engine.step_gan_trainer import STEPGANTrainer
-from orchestration.data_preprocessor import DataPreprocessor
-from orchestration.federated_coordinator import FederatedCoordinator
-from theme import (
-    apply_theme,
-    metric_card,
-    page_header,
-    section_header,
-    status_badge,
-)
+
+# ---------------------------------------------------------------------------
+# Leitura de arquivos (CSV de transações e checkpoints)
+# ---------------------------------------------------------------------------
+
+def _file_picker(label, key, azure_dir, extensions):
+    """Escolhe um arquivo do Azure ou do computador. Retorna (nome, bytes) ou (None, None)."""
+    azure = get_azure_client()
+    origens = ["Upload do computador"]
+    if azure.available:
+        origens.insert(0, f"Azure Blob ({azure_dir})")
+    origem = st.radio(f"Origem — {label}", origens, horizontal=True, key=f"{key}_origem")
+
+    if origem.startswith("Azure"):
+        arquivos = [a for a in azure.list_blobs(azure_dir) if a.lower().endswith(tuple(extensions))]
+        if not arquivos:
+            st.info(f"Nenhum arquivo {', '.join(extensions)} em {azure_dir}.")
+            return None, None
+        nome = st.selectbox(label, arquivos, key=f"{key}_blob")
+        cache = st.session_state.get(f"{key}_cache")
+        if cache and cache[0] == ("azure", nome):
+            return nome, cache[1]
+        if st.button("Carregar arquivo do Azure", key=f"{key}_baixar"):
+            with st.spinner(f"Baixando {nome}..."):
+                dados = azure.download_blob_bytes(azure_dir, nome)
+            if dados is None:
+                st.error(azure.error or "Não foi possível baixar o arquivo.")
+                return None, None
+            st.session_state[f"{key}_cache"] = (("azure", nome), dados)
+            return nome, dados
+        return None, None
+
+    arquivo = st.file_uploader(label, type=[e.lstrip(".") for e in extensions], key=f"{key}_upload")
+    if arquivo is None:
+        return None, None
+    return arquivo.name, arquivo.getvalue()
 
 
-PRIMARY = "#2563EB"
-ACCENT = "#0F766E"
-DANGER = "#B91C1C"
-SUCCESS = "#15803D"
-WARNING = "#B45309"
+def _read_csv_cached(key, nome, dados):
+    """Lê o CSV uma única vez por arquivo (o rerun do Streamlit não relê 150 MB a cada clique)."""
+    sha = sha256_hex(dados)
+    cache = st.session_state.get(f"{key}_df")
+    if cache and cache["sha256"] == sha:
+        return cache
+    df = read_csv_bytes(dados)
+    cache = {"name": nome, "sha256": sha, "df": df, "size": len(dados)}
+    st.session_state[f"{key}_df"] = cache
+    return cache
 
 
-try:
-    import torch
+# ---------------------------------------------------------------------------
+# Treinamento
+# ---------------------------------------------------------------------------
 
-    TORCH_AVAILABLE = True
-    DEVICE = torch.device(
-        "cuda" if torch.cuda.is_available() else "cpu"
-    )
-except ImportError:
-    TORCH_AVAILABLE = False
-    DEVICE = "cpu"
+def _dataset_preview(df):
+    amostra = clean_raw_dataframe(df.head(50))
+    alvo = detect_target(amostra)
+    esquema = detect_schema(amostra)
+    itens = [
+        ("Transações", f"{len(df):,}".replace(",", "."), "linhas no arquivo", PRIMARY),
+        ("Colunas", str(df.shape[1]), "no arquivo original", PRIMARY),
+        ("Esquema detectado", esquema.upper(), SCHEMA_LABELS[esquema], ACCENT),
+    ]
+    if alvo:
+        # O nome limpo pode diferir do original (ex.: CSV com aspas nos cabeçalhos)
+        origem = df if alvo in df.columns else clean_raw_dataframe(df)
+        fraudes = int(pd.to_numeric(origem[alvo], errors="coerce").fillna(0).sum())
+        itens.append(("Fraudes rotuladas", f"{fraudes:,}".replace(",", "."), f"coluna-alvo: {alvo}", DANGER))
+    else:
+        itens.append(("Rótulos", "ausentes", "treino não supervisionado", WARNING))
+    metric_grid(itens)
+    if not alvo:
+        note(
+            "A base não tem coluna de rótulo (Class, isFraud, ...). O modelo será treinado só com o perfil "
+            "normal e o limiar será o quantil definido em 'Taxa de alerta esperada'.",
+            "warning",
+        )
 
 
-def _clean_test_csv(df_test):
-    """Limpa e converte o CSV usado na inferência."""
-    df_test = df_test.copy()
-
-    if len(df_test.columns) == 1:
-        column_name = df_test.columns[0]
-
-        if (
-            df_test[column_name]
-            .astype(str)
-            .str.contains(",", regex=False)
-            .any()
-        ):
-            expanded = (
-                df_test[column_name]
-                .astype(str)
-                .str.split(",", expand=True)
+def _training_form():
+    with st.form("training_config_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            num_clients = st.slider("Clientes / silos federados", 2, 10, 3)
+            num_rounds = st.number_input("Rodadas federadas", 1, 30, 5)
+            local_epochs = st.number_input("Épocas locais por rodada", 1, 30, 7)
+        with col2:
+            batch_size = st.selectbox("Tamanho do lote", [128, 256, 512], index=2)
+            latent_dim = st.selectbox("Dimensão latente Z", [64, 100, 128], index=1)
+            seed = st.number_input("Semente (reprodutibilidade)", 0, 10_000, 42)
+        with col3:
+            normals_per_fraud = st.number_input(
+                "Normais por fraude (0 = base completa)", 0, 2000, 200,
+                help="Amostragem do protocolo validado na PoC: mantém todas as fraudes e N normais por fraude.",
             )
-
-            new_columns = str(column_name).split(",")
-
-            if len(new_columns) == expanded.shape[1]:
-                expanded.columns = new_columns
-                df_test = expanded
-
-    df_test.columns = [
-        str(column).strip().replace('"', "").replace("'", "")
-        for column in df_test.columns
-    ]
-
-    for column in df_test.columns:
-        if df_test[column].dtype == object:
-            df_test[column] = (
-                df_test[column]
-                .astype(str)
-                .str.strip(' "\'')
+            min_precision = st.slider(
+                "Precisão mínima do alerta", 0.50, 0.95, 0.70, 0.05,
+                help="O limiar é o de maior recall que atinge esta precisão na validação.",
             )
-
-    return df_test.apply(pd.to_numeric, errors="coerce")
-
-
-def _show_training_metrics(logs_df):
-    """Exibe tabela e resumo das perdas de treinamento."""
-    if logs_df.empty:
-        st.info("Nenhum registro de treinamento disponível.")
-        return
-
-    st.markdown(
-        "<div class='card shadow-sm border-0 p-3 mb-3'>"
-        "<div class='fw-semibold text-primary mb-2'>"
-        "Valores das métricas por cliente e rodada"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    table = logs_df.rename(
-        columns={
-            "client": "Cliente",
-            "round": "Rodada",
-            "loss_g": "Loss Gerador",
-            "loss_d": "Loss Discriminador",
-        }
-    ).copy()
-
-    for column in ["Loss Gerador", "Loss Discriminador"]:
-        if column in table.columns:
-            table[column] = table[column].astype(float).round(6)
-
-    st.dataframe(
-        table,
-        width="stretch",
-        hide_index=True,
-    )
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    summary = (
-        logs_df
-        .groupby("round")[["loss_g", "loss_d"]]
-        .agg(["mean", "min", "max"])
-    )
-
-    summary.columns = [
-        f"{metric} - {stat}"
-        for metric, stat in summary.columns.to_flat_index()
-    ]
-    summary.index.name = "Rodada"
-
-    st.markdown(
-        "<div class='card shadow-sm border-0 p-3 mb-3'>"
-        "<div class='fw-semibold text-primary mb-2'>"
-        "Resumo estatístico por rodada"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    st.dataframe(
-        summary.round(6),
-        width="stretch",
-    )
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def _show_training_charts(logs_df):
-    """Exibe os gráficos de evolução das perdas."""
-    if logs_df.empty:
-        return
-
-    loss_summary = (
-        logs_df
-        .groupby("round")[["loss_g", "loss_d"]]
-        .mean()
-        .rename(
-            columns={
-                "loss_g": "Loss Gerador",
-                "loss_d": "Loss Discriminador",
-            }
-        )
-    )
-
-    st.markdown(
-        "<div class='card shadow-sm border-0 p-3 mb-3'>"
-        "<div class='fw-semibold text-primary mb-3'>"
-        "Evolução das perdas"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    st.line_chart(
-        loss_summary,
-        color=[PRIMARY, DANGER],
-    )
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    chart_col1, chart_col2 = st.columns(2)
-
-    with chart_col1:
-        st.markdown(
-            "<div class='card shadow-sm border-0 p-3 mb-3'>"
-            "<div class='small text-secondary mb-2'>"
-            "Loss médio do gerador"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-
-        st.bar_chart(
-            loss_summary[["Loss Gerador"]],
-            color=PRIMARY,
-        )
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with chart_col2:
-        st.markdown(
-            "<div class='card shadow-sm border-0 p-3 mb-3'>"
-            "<div class='small text-secondary mb-2'>"
-            "Loss médio do discriminador"
-            "</div>",
-            unsafe_allow_html=True,
-        )
-
-        st.bar_chart(
-            loss_summary[["Loss Discriminador"]],
-            color=DANGER,
-        )
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
-def _prepare_client_data(X_scaled, y, num_clients):
-    """Divide os dados entre os clientes federados."""
-    if num_clients <= 0:
-        raise ValueError(
-            "O número de clientes deve ser maior que zero."
-        )
-
-    if len(X_scaled) == 0:
-        raise ValueError("A base de dados está vazia.")
-
-    indexes_by_client = np.array_split(
-        np.arange(len(X_scaled)),
-        num_clients,
-    )
-
-    clients_X = [
-        X_scaled[indexes]
-        for indexes in indexes_by_client
-        if len(indexes) > 0
-    ]
-
-    clients_y = [
-        y[indexes]
-        for indexes in indexes_by_client
-        if len(indexes) > 0
-    ]
-
-    return clients_X, clients_y
-
-
-def _save_processed_data(azure_client, original_filename, X_scaled):
-    """Salva os dados processados no Azure."""
-    csv_buffer = io.BytesIO()
-    pd.DataFrame(X_scaled).to_csv(csv_buffer, index=False)
-
-    return azure_client.upload_blob(
-        "processed-data",
-        f"processed_{original_filename}",
-        csv_buffer.getvalue(),
-    )
-
-
-def _calculate_threshold(y_true, anomaly_scores):
-    """Calcula um limiar usando a curva Precision-Recall."""
-    default_threshold = 0.85
-
-    if y_true is None:
-        return default_threshold
-
-    y_true = np.asarray(y_true)
-
-    if len(np.unique(y_true)) < 2:
-        return default_threshold
-
-    precision, recall, thresholds = precision_recall_curve(
-        y_true,
-        anomaly_scores,
-    )
-
-    if len(thresholds) == 0:
-        return default_threshold
-
-    valid_indexes = np.where(precision[:-1] >= 0.70)[0]
-
-    if len(valid_indexes) == 0:
-        return default_threshold
-
-    best_index = valid_indexes[np.argmax(recall[valid_indexes])]
-    return float(thresholds[best_index])
-
-
-def _resolve_discriminator(model_or_trainer):
-    """Aceita um trainer ou um Discriminator diretamente."""
-    discriminator = (
-        model_or_trainer.D
-        if hasattr(model_or_trainer, "D")
-        else model_or_trainer
-    )
-
-    if not callable(discriminator):
-        raise TypeError(
-            "O modelo salvo não é um Discriminator válido."
-        )
-
-    return discriminator
-
-
-def _run_inference(df_test, model_or_trainer, preprocessor):
-    """Executa a inferência usando o discriminador global."""
-    df_test = _clean_test_csv(df_test)
-    has_labels = "Class" in df_test.columns
-
-    X_test_scaled, _, df_clean = preprocessor.process_and_scale(
-        df_test,
-        is_training=False,
-    )
-
-    if len(X_test_scaled) == 0:
-        raise ValueError(
-            "O arquivo de teste ficou vazio após a limpeza."
-        )
-
-    discriminator = _resolve_discriminator(model_or_trainer)
-    discriminator.eval()
-
-    start_time = time.time()
-
-    with torch.no_grad():
-        X_tensor = torch.FloatTensor(X_test_scaled).to(DEVICE)
-        probability_normal = (
-            discriminator(X_tensor)
-            .detach()
-            .cpu()
-            .numpy()
-            .flatten()
-        )
-
-    anomaly_scores = 1.0 - probability_normal
-    score_min = anomaly_scores.min()
-    score_max = anomaly_scores.max()
-
-    if score_max > score_min:
-        anomaly_scores = (
-            anomaly_scores - score_min
-        ) / (score_max - score_min)
-
-    anomaly_scores = np.clip(
-        anomaly_scores,
-        0.0,
-        1.0,
-    )
-
-    elapsed_time = time.time() - start_time
-    transactions_per_second = (
-        len(df_clean) / elapsed_time
-        if elapsed_time > 0
-        else 0
-    )
-
-    y_test = None
-
-    if has_labels:
-        y_test = (
-            df_test["Class"]
-            .dropna()
-            .astype(int)
-            .values
-        )
-
-    threshold = _calculate_threshold(
-        y_test,
-        anomaly_scores,
-    )
-
-    predictions = (
-        anomaly_scores >= threshold
-    ).astype(int)
-
-    result_df = df_clean.copy()
-    result_df["Score Anomalia"] = anomaly_scores * 100
-    result_df["Alerta Fraude"] = predictions
-
-    metrics = {}
-
-    if (
-        y_test is not None
-        and len(np.unique(y_test)) >= 2
-        and len(y_test) == len(predictions)
-    ):
-        metrics = {
-            "Acurácia": accuracy_score(
-                y_test,
-                predictions,
-            ),
-            "Precisão": precision_score(
-                y_test,
-                predictions,
-                zero_division=0,
-            ),
-            "Recall": recall_score(
-                y_test,
-                predictions,
-                zero_division=0,
-            ),
-            "F1-Score": f1_score(
-                y_test,
-                predictions,
-                zero_division=0,
-            ),
-            "ROC-AUC": roc_auc_score(
-                y_test,
-                anomaly_scores,
-            ),
-            "PR-AUC": average_precision_score(
-                y_test,
-                anomaly_scores,
-            ),
-            "TPS": transactions_per_second,
-            "Threshold": threshold,
-        }
-
-    return (
-        result_df,
-        metrics,
-        threshold,
-        transactions_per_second,
-    )
-
-
-def _show_inference_metrics(metrics):
-    """Exibe as métricas da inferência em cards corporativos."""
-    if not metrics:
-        return
-
-    st.markdown(
-        "<div class='row g-3 mb-3'>",
-        unsafe_allow_html=True,
-    )
-
-    columns = st.columns(min(len(metrics), 4))
-
-    for column, (name, value) in zip(columns, metrics.items()):
-        display_value = (
-            f"{value:.4f}"
-            if isinstance(value, (float, np.floating))
-            else str(value)
-        )
-
-        with column:
-            st.markdown(
-                metric_card(
-                    name,
-                    display_value,
-                    "métrica calculada",
-                    PRIMARY,
-                ),
-                unsafe_allow_html=True,
+            alert_rate = st.slider(
+                "Taxa de alerta esperada (%) — base sem rótulos", 0.1, 10.0, 1.0, 0.1,
             )
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def _render_inference_section():
-    """Renderiza a seção de teste e inferência."""
-    if "trained_model" not in st.session_state:
-        return
-
-    section_header(
-        "4",
-        "Detecção de anomalias e inferência",
+        st.caption(
+            "STEP-GAN com 3 geradores condicionados por limiares e Discriminador graduado; "
+            "agregação SMPC em Z_p (p = 2^61−1) — protocolo do Teste 4 (v5) da PoC."
+        )
+        enviado = st.form_submit_button("Iniciar treinamento federado", width="stretch")
+    return enviado, TrainingSettings(
+        num_clients=num_clients, num_rounds=int(num_rounds), local_epochs=int(local_epochs),
+        batch_size=batch_size, latent_dim=latent_dim, normals_per_fraud=int(normals_per_fraud),
+        min_precision=float(min_precision), expected_alert_rate=alert_rate / 100, seed=int(seed),
     )
 
-    st.markdown(
-        """
-        <div class="alert alert-primary shadow-sm" role="alert">
-            <i class="bi bi-shield-check"></i>
-            Faça upload de um CSV de transações para avaliar o modelo global.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
-    test_file = st.file_uploader(
-        "Upload de arquivo CSV de teste",
-        type=["csv"],
-        key="technical_test_csv",
-    )
+def _save_checkpoint(bundle):
+    azure = get_azure_client()
+    if not azure.available:
+        return None
+    model_id = bundle.metadata["model_id"]
+    ok = azure.upload_blob("model-checkpoints", f"{model_id}.pt", bundle.to_bytes())
+    resumo = {"metadata": bundle.metadata, "threshold": bundle.threshold,
+              "threshold_strategy": bundle.threshold_strategy, "metrics": bundle.metrics}
+    azure.upload_blob("model-checkpoints", f"{model_id}.json",
+                      json.dumps(resumo, ensure_ascii=False, indent=2, default=str).encode("utf-8"))
+    return f"model-checkpoints/{model_id}.pt" if ok else None
 
-    if test_file is None:
-        return
 
-    if not st.button(
-        "Executar inferência do discriminador",
-        width="stretch",
-        key="technical_inference_button",
-    ):
-        return
+def _run_training(dataset, settings):
+    total = settings.num_rounds * settings.num_clients
+    barra = st.progress(0.0, text="Preparando dados...")
+
+    def progresso(rodada, cliente, total_rodadas):
+        feito = (rodada - 1) * settings.num_clients + (cliente - 1)
+        barra.progress(feito / total, text=f"Rodada {rodada}/{total_rodadas} · treino local do cliente {cliente}")
 
     try:
-        with st.spinner(
-            "Avaliando transações e calculando anomalias..."
-        ):
-            df_test = pd.read_csv(
-                test_file,
-                sep=None,
-                engine="python",
-            )
-
-            result_df, metrics, threshold, tps = _run_inference(
-                df_test,
-                st.session_state.trained_model,
-                st.session_state.preprocessor,
-            )
-
-        alerts = int(result_df["Alerta Fraude"].sum())
-
-        st.session_state.inference_results = result_df
-        st.session_state.inference_metadata = {
-            "threshold": threshold,
-            "tps": tps,
-            "transactions": len(result_df),
-            "alerts": alerts,
-        }
-        st.session_state.inference_metrics = metrics
-
-        if alerts > 0:
-            st.warning(
-                f"{alerts} transação(ões) suspeita(s) detectada(s)."
-            )
-        else:
-            st.success("Nenhuma anomalia detectada.")
-
-    except Exception as error:
-        st.error(f"Erro durante a inferência: {error}")
+        bundle = run_training(
+            dataset["df"], dataset["name"], dataset["sha256"], settings, progress=progresso, user=current_user()
+        )
+    except Exception as exc:  # noqa: BLE001 - erro exibido ao auditor
+        barra.empty()
+        st.error(f"O treinamento não pôde ser concluído: {exc}")
+        record_event("treinamento_falhou", {"dataset": dataset["name"], "erro": str(exc)})
         return
+    barra.progress(1.0, text="Treinamento concluído.")
 
-    if metrics:
-        section_header("5", "Métricas de inferência")
-        _show_inference_metrics(metrics)
+    caminho = _save_checkpoint(bundle)
+    st.session_state.model_bundle = bundle
+    st.session_state.pop("inference", None)
+    record_event("treinamento", {
+        "model_id": bundle.metadata["model_id"],
+        "dataset": dataset["name"],
+        "dataset_sha256": dataset["sha256"],
+        "settings": bundle.metadata["settings"],
+        "threshold": bundle.threshold,
+        "metrics_test": bundle.metrics.get("teste", {}),
+        "checkpoint": caminho,
+    })
+    if caminho:
+        st.success(f"Modelo treinado e salvo em {caminho}.")
+    else:
+        st.warning("Modelo treinado, mas o checkpoint não foi salvo no Azure. Use o botão de download abaixo.")
 
-    section_header(
-        "6",
-        "Distribuição e transações priorizadas",
+
+def _tab_train():
+    nome, dados = _file_picker("Base de treinamento (CSV)", "treino", "raw-data", [".csv"])
+    if dados is None:
+        return
+    try:
+        dataset = _read_csv_cached("treino", nome, dados)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Não foi possível ler o CSV: {exc}")
+        return
+    st.caption(f"Arquivo: {nome} · SHA-256: {dataset['sha256'][:16]}…")
+    _dataset_preview(dataset["df"])
+    enviado, settings = _training_form()
+    if enviado:
+        _run_training(dataset, settings)
+
+
+def _tab_load():
+    nome, dados = _file_picker("Checkpoint do modelo (.pt)", "modelo", "model-checkpoints", [".pt"])
+    if dados is None:
+        return
+    if st.button("Usar este modelo", key="carregar_modelo"):
+        try:
+            bundle = ModelBundle.from_bytes(dados)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Checkpoint inválido: {exc}")
+            return
+        st.session_state.model_bundle = bundle
+        st.session_state.pop("inference", None)
+        record_event("modelo_carregado", {"arquivo": nome, "sha256": sha256_hex(dados),
+                                          "model_id": bundle.metadata.get("model_id")})
+        st.success(f"Modelo {bundle.metadata.get('model_id')} carregado.")
+
+
+def _model_summary(bundle):
+    meta = bundle.metadata
+    st.markdown(
+        status_badge(f"MODELO ATIVO: {meta.get('model_id', '-')}", "success"), unsafe_allow_html=True
+    )
+    metric_grid([
+        ("Dataset", meta.get("dataset", "-"), meta.get("schema_label", ""), PRIMARY),
+        ("Limiar de alerta", f"{bundle.threshold * 100:.1f}", "escore 0–100 · calibrado na validação", DANGER),
+        ("Melhor rodada", str(meta.get("best_round", "-")),
+         f"de {meta.get('settings', {}).get('num_rounds', '-')} · {meta.get('settings', {}).get('num_clients', '-')} clientes", PRIMARY),
+        ("Treinado em", meta.get("created_at", "-")[:16].replace("T", " "), meta.get("created_by", ""), MUTED),
+    ])
+    note(f"Critério do limiar: {bundle.threshold_strategy}.")
+    if bundle.metrics.get("teste"):
+        metric_grid(model_metric_items(bundle.metrics["teste"]), per_row=6)
+
+    with st.expander("Detalhes do treinamento, privacidade e rastreabilidade"):
+        historico = pd.DataFrame(bundle.history)
+        if not historico.empty:
+            st.markdown("**Convergência na validação por rodada**")
+            st.line_chart(historico.set_index("rodada")[["pr_auc_val", "roc_auc_val"]]
+                          .rename(columns={"pr_auc_val": "PR-AUC", "roc_auc_val": "ROC-AUC"}),
+                          color=[PRIMARY, ACCENT])
+            st.markdown("**Agregação SMPC por rodada**")
+            st.dataframe(pd.DataFrame({
+                "Rodada": historico["rodada"],
+                "Tempo SMPC (s)": historico["smpc_seconds"].round(3),
+                "Erro máx. vs FedAvg em claro": historico.get("smpc_max_error", pd.Series(dtype=float)).map("{:.1e}".format),
+                "Enviado por cliente (MB)": (historico["bytes_per_client"] / 1e6).round(2),
+            }), hide_index=True, width="stretch")
+        if bundle.adherence:
+            st.markdown("**Condicionamento por limiares (τ pedido × D obtido)**")
+            st.dataframe(pd.DataFrame(bundle.adherence).round(3), hide_index=True, width="stretch")
+        st.markdown("**Metadados (rastreabilidade)**")
+        st.json(meta, expanded=False)
+
+    st.download_button(
+        "Baixar checkpoint do modelo (.pt)", bundle.to_bytes(), file_name=f"{meta.get('model_id', 'modelo')}.pt",
+        mime="application/octet-stream", key="baixar_checkpoint",
     )
 
-    chart_col, table_col = st.columns([1, 2], gap="large")
 
-    with chart_col:
-        st.markdown(
-            "<div class='card shadow-sm border-0 p-3'>"
-            "<div class='fw-semibold text-primary mb-3'>"
-            "Distribuição do escore"
-            "</div>",
-            unsafe_allow_html=True,
-        )
+# ---------------------------------------------------------------------------
+# Inferência e triagem
+# ---------------------------------------------------------------------------
 
-        counts, bins = np.histogram(
-            result_df["Score Anomalia"],
-            bins=30,
-        )
+def _run_inference(bundle, nome, dados):
+    try:
+        with st.spinner("Calculando o escore de risco das transações..."):
+            dataset = _read_csv_cached("inferencia", nome, dados)
+            resultado = score_transactions(bundle, dataset["df"])
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Erro durante a análise: {exc}")
+        return
+    st.session_state.inference = {
+        "id": uuid.uuid4().hex[:8], "result": resultado, "source": nome, "sha256": dataset["sha256"],
+        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+    }
+    record_event("inferencia", {
+        "model_id": bundle.metadata.get("model_id"), "arquivo": nome, "sha256": dataset["sha256"],
+        "transacoes": resultado.summary["transactions"], "alertas": resultado.summary["alerts"],
+        "niveis": resultado.summary["levels"], "metricas": resultado.metrics,
+    })
 
-        chart_df = pd.DataFrame(
-            {"Transações": counts},
-            index=bins[:-1],
-        )
 
-        st.area_chart(
-            chart_df,
-            color=PRIMARY,
-        )
+def _inference_overview(resultado):
+    resumo = resultado.summary
+    metric_grid([
+        ("Transações analisadas", f"{resumo['transactions']:,}".replace(",", "."), "no arquivo", PRIMARY),
+        ("Alertas", str(resumo["alerts"]), f"{resumo['alert_rate'] * 100:.2f}% do total",
+         DANGER if resumo["alerts"] else ACCENT),
+        ("Risco crítico", str(resumo["levels"]["Crítico"]), "prioridade máxima", "#7F1D1D"),
+        ("Throughput", f"{resumo['tps']:,.0f}".replace(",", "."), "transações/s", MUTED),
+    ])
+    if resultado.metrics:
+        st.markdown("**Desempenho neste arquivo (possui rótulos)**")
+        metric_grid([(n, v, "limiar fixo do modelo", PRIMARY) for n, v in resultado.metrics.items()], per_row=6)
+        note("O limiar foi calibrado na validação do treino; este arquivo não influenciou a escolha do limiar.")
 
-        st.markdown("</div>", unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    tabela = resultado.table
+    with col1:
+        st.markdown("**Transações por nível de risco**")
+        contagem = tabela["Nível de risco"].value_counts().reindex(RISK_LEVELS, fill_value=0)
+        st.bar_chart(contagem.rename("Transações"), color=DANGER)
+    with col2:
+        st.markdown(f"**Distribuição do escore (limiar = {resumo['threshold'] * 100:.1f})**")
+        contagens, bordas = np.histogram(tabela["Escore de risco"], bins=20, range=(0, 100))
+        st.bar_chart(pd.DataFrame({"Transações": contagens}, index=[f"{b:.0f}" for b in bordas[:-1]]), color=PRIMARY)
 
-    with table_col:
-        st.markdown(
-            "<div class='card shadow-sm border-0 p-3'>"
-            "<div class='fw-semibold text-primary mb-3'>"
-            "Transações priorizadas"
-            "</div>",
-            unsafe_allow_html=True,
-        )
 
-        st.dataframe(
-            result_df.sort_values(
-                "Score Anomalia",
-                ascending=False,
-            ).head(1000),
-            width="stretch",
-        )
+def _triage_queue(inferencia):
+    tabela = inferencia["result"].table
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        niveis = st.multiselect("Níveis de risco na fila", RISK_LEVELS, default=["Crítico", "Alto"], key="fila_niveis")
+    with col2:
+        limite = st.number_input("Máximo de linhas", 10, 5000, 500, key="fila_limite")
+    fila = (tabela[tabela["Nível de risco"].isin(niveis)]
+            .sort_values("Escore de risco", ascending=False).head(int(limite)))
+    if fila.empty:
+        st.success("Nenhuma transação nos níveis selecionados.")
+        return
 
-        st.markdown("</div>", unsafe_allow_html=True)
+    editaveis = ["Status da análise", "Observação do auditor"]
+    editado = st.data_editor(
+        fila,
+        key=f"triagem_{inferencia['id']}",
+        hide_index=True,
+        width="stretch",
+        disabled=[c for c in fila.columns if c not in editaveis],
+        column_config={
+            "Escore de risco": st.column_config.ProgressColumn("Escore de risco", min_value=0, max_value=100, format="%.1f"),
+            "Status da análise": st.column_config.SelectboxColumn("Status da análise", options=TRIAGE_STATUS, required=True),
+            "Observação do auditor": st.column_config.TextColumn("Observação do auditor", max_chars=500),
+            "Alerta": st.column_config.CheckboxColumn("Alerta"),
+        },
+    )
+    tabela.loc[editado.index, editaveis] = editado[editaveis].values
+    contagem = tabela.loc[tabela["Alerta"], "Status da análise"].value_counts()
+    st.caption(" · ".join(f"{s}: {int(contagem.get(s, 0))}" for s in TRIAGE_STATUS) + " (alertas)")
+
+
+def _exports(bundle, inferencia):
+    tabela = inferencia["result"].table
+    carimbo = inferencia["at"][:19].replace(":", "").replace("-", "")
+    base = f"analise_{bundle.metadata.get('model_id', 'modelo')}_{carimbo}"
+    csv_completo = tabela.to_csv(index=False).encode("utf-8-sig")
+    csv_alertas = tabela[tabela["Alerta"]].to_csv(index=False).encode("utf-8-sig")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.download_button("Baixar resultado completo (CSV)", csv_completo, f"{base}.csv", "text/csv", width="stretch")
+    with col2:
+        st.download_button("Baixar só os alertas (CSV)", csv_alertas, f"{base}_alertas.csv", "text/csv", width="stretch")
+    with col3:
+        azure = get_azure_client()
+        if st.button("Salvar relatório no Azure", disabled=not azure.available, width="stretch", key="salvar_relatorio"):
+            ok = azure.upload_blob("audit-artifacts", f"{base}_triagem.csv", csv_alertas)
+            status = tabela.loc[tabela["Alerta"], "Status da análise"].value_counts().to_dict()
+            record_event("relatorio_triagem", {"arquivo": f"audit-artifacts/{base}_triagem.csv", "salvo": ok,
+                                               "origem": inferencia["source"], "status": status})
+            if ok:
+                st.success(f"Relatório salvo em audit-artifacts/{base}_triagem.csv.")
+            else:
+                st.error(azure.error or "Falha ao salvar o relatório.")
+
+
+def _render_inference(bundle):
+    section_header("3", "Análise de transações")
+    nome, dados = _file_picker("Transações para análise (CSV)", "inferencia", "raw-data", [".csv"])
+    if dados is not None and st.button("Executar análise", width="stretch", key="executar_analise"):
+        _run_inference(bundle, nome, dados)
+
+    inferencia = st.session_state.get("inference")
+    if not inferencia:
+        return
+    st.caption(f"Arquivo analisado: {inferencia['source']} · SHA-256 {inferencia['sha256'][:16]}… · {inferencia['at']}")
+    _inference_overview(inferencia["result"])
+    section_header("4", "Fila de triagem dos alertas")
+    note("Registre o status e a observação de cada alerta. Os 'fatores mais atípicos' indicam as variáveis mais "
+         "distantes do perfil normal do treino (em intervalos interquartis); não são prova de fraude.")
+    _triage_queue(inferencia)
+    section_header("5", "Exportação e evidências")
+    _exports(bundle, inferencia)
 
 
 def view_training():
-    """Renderiza a view corporativa de treinamento e inferência."""
-    apply_theme()
+    page_header("⚙️", "Treinamento e Inferência",
+                "Treinamento federado com SMPC, gestão de modelos e triagem de transações suspeitas.")
 
-    page_header(
-        "⚙️",
-        "Treinamento e Inferência",
-        "Treinamento federado, análise de transações e detecção de anomalias.",
-    )
+    section_header("1", "Modelo")
+    aba_treino, aba_carregar = st.tabs(["Treinar novo modelo", "Carregar modelo salvo"])
+    with aba_treino:
+        _tab_train()
+    with aba_carregar:
+        _tab_load()
 
-    azure_client = AzureBlobClient()
-
-    section_header(
-        "1",
-        "Seleção de dados de treinamento",
-    )
-
-    raw_files = azure_client.list_blobs("raw-data")
-
-    if not raw_files:
-        st.markdown(
-            """
-            <div class="alert alert-warning shadow-sm" role="alert">
-                <i class="bi bi-database-exclamation"></i>
-                <strong>Nenhum arquivo encontrado.</strong>
-                <p class="mb-0 mt-2">
-                    Envie um CSV pelo Azure Blob Storage antes de iniciar.
-                </p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    bundle = st.session_state.get("model_bundle")
+    if bundle is None:
+        note("Treine um modelo ou carregue um checkpoint para analisar transações.")
         return
-
-    selected_file = st.selectbox(
-        "Dataset de treinamento",
-        raw_files,
-        key="technical_training_dataset",
-    )
-
-    section_header(
-        "2",
-        "Configuração da orquestração federada",
-    )
-
-    st.markdown(
-        "<div class='card shadow-sm border-0 p-3 mb-3'>",
-        unsafe_allow_html=True,
-    )
-
-    with st.form("training_config_form"):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            num_clients = st.slider(
-                "Número de clientes/silos",
-                min_value=2,
-                max_value=10,
-                value=3,
-            )
-
-            num_rounds = st.number_input(
-                "Rodadas federadas",
-                min_value=1,
-                max_value=50,
-                value=3,
-            )
-
-        with col2:
-            latent_dim = st.selectbox(
-                "Dimensão latente Z",
-                [64, 100, 128],
-                index=1,
-            )
-
-            batch_size = st.selectbox(
-                "Tamanho do lote",
-                [128, 256, 512],
-                index=2,
-            )
-
-        submitted = st.form_submit_button(
-            "Iniciar orquestração federada",
-        )
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    if submitted:
-        _run_training(
-            azure_client=azure_client,
-            selected_file=selected_file,
-            num_clients=num_clients,
-            num_rounds=num_rounds,
-            latent_dim=latent_dim,
-            batch_size=batch_size,
-        )
-
-    if "training_logs" in st.session_state:
-        section_header("3", "Métricas do treinamento")
-
-        logs_df = pd.DataFrame(
-            st.session_state.training_logs
-        )
-
-        _show_training_metrics(logs_df)
-        _show_training_charts(logs_df)
-
-    _render_inference_section()
-
-
-def _run_training(
-    azure_client,
-    selected_file,
-    num_clients,
-    num_rounds,
-    latent_dim,
-    batch_size,
-):
-    """Executa o treinamento federado."""
-    if not TORCH_AVAILABLE:
-        st.error("O treinamento requer o PyTorch instalado.")
-        return
-
-    with st.spinner(
-        f"Baixando {selected_file} do Azure..."
-    ):
-        df_train = azure_client.download_blob_as_dataframe(
-            "raw-data",
-            selected_file,
-        )
-
-    if df_train is None or df_train.empty:
-        st.error("Não foi possível carregar o dataset.")
-        return
-
-    with st.spinner("Pré-processando dados..."):
-        preprocessor = DataPreprocessor()
-        X_scaled, y, _ = preprocessor.process_and_scale(
-            df_train,
-            is_training=True,
-        )
-
-    if len(X_scaled) == 0:
-        st.error("A base ficou vazia após a limpeza.")
-        return
-
-    st.session_state.preprocessor = preprocessor
-    st.session_state.input_dim = X_scaled.shape[1]
-
-    _save_processed_data(
-        azure_client,
-        selected_file,
-        X_scaled,
-    )
-
-    clients_X, clients_y = _prepare_client_data(
-        X_scaled,
-        y,
-        num_clients,
-    )
-
-    coordinator = FederatedCoordinator(len(clients_X))
-
-    trainer = STEPGANTrainer(
-        X_scaled.shape[1],
-        {
-            "latent_dim": latent_dim,
-            "batch": batch_size,
-            "lr_g": 0.0002,
-            "lr_d": 0.0001,
-        },
-    )
-
-    progress_bar = st.progress(0)
-    status_container = st.empty()
-
-    for round_number in range(1, num_rounds + 1):
-        with status_container.container():
-            st.markdown(
-                f"""
-                <div class="alert alert-primary shadow-sm" role="alert">
-                    <i class="bi bi-arrow-repeat"></i>
-                    <strong>Rodada {round_number}/{num_rounds}</strong>
-                    <span class="ms-2">
-                        Treinamento local e agregação SMPC em andamento.
-                    </span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        coordinator.run_federated_round(
-            round_number,
-            trainer,
-            clients_X,
-            clients_y,
-        )
-
-        progress_bar.progress(round_number / num_rounds)
-
-    # O estado guarda o discriminador diretamente.
-    # A inferência trata também o caso de trainer completo.
-    st.session_state.trained_model = trainer.D
-    st.session_state.preprocessor = preprocessor
-    st.session_state.training_metadata = {
-        "num_rounds": num_rounds,
-        "num_clients": len(clients_X),
-        "latent_dim": latent_dim,
-        "batch_size": batch_size,
-        "lr_g": 0.0002,
-        "lr_d": 0.0001,
-        "input_dim": X_scaled.shape[1],
-        "dataset": selected_file,
-    }
-    st.session_state.training_logs = trainer.logs
-
-    now_text = datetime.datetime.now().strftime(
-        "%Y-%m-%d_%H-%M-%S"
-    )
-
-    checkpoint_filename = (
-        f"step_gan_checkpoint_{now_text}.txt"
-    )
-
-    checkpoint_content = f"""
-CHECKPOINT DO MODELO GLOBAL STEP-GAN
-
-Data de Geração: {now_text}
-Dataset: {selected_file}
-Rodadas Federadas: {num_rounds}
-Clientes Participantes: {len(clients_X)}
-Dimensão de Entrada: {X_scaled.shape[1]}
-Dimensão Latente: {latent_dim}
-Tamanho do Lote: {batch_size}
-Learning Rate Gerador: 0.0002
-Learning Rate Discriminador: 0.0001
-Algoritmo de Agregação: SMPC
-Aritmética: Modular
-Status: Treinamento Concluído
-"""
-
-    uploaded = azure_client.upload_blob(
-        "model-checkpoints",
-        checkpoint_filename,
-        checkpoint_content.encode("utf-8"),
-    )
-
-    st.markdown(
-        "<div class='card shadow-sm border-0 p-3 mb-3'>",
-        unsafe_allow_html=True,
-    )
-
-    if uploaded:
-        st.markdown(
-            status_badge(
-                "TREINAMENTO CONCLUÍDO",
-                "success",
-            ),
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            f"Checkpoint salvo em model-checkpoints/"
-            f"{checkpoint_filename}."
-        )
-    else:
-        st.markdown(
-            status_badge(
-                "TREINAMENTO CONCLUÍDO SEM CHECKPOINT",
-                "warning",
-            ),
-            unsafe_allow_html=True,
-        )
-        st.caption(
-            "O treinamento terminou, mas o checkpoint não pôde ser salvo."
-        )
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# Compatibilidade com o nome usado anteriormente.
-render_training = view_training
-
-
-if __name__ == "__main__":
-    view_training()
+    section_header("2", "Modelo ativo")
+    _model_summary(bundle)
+    _render_inference(bundle)

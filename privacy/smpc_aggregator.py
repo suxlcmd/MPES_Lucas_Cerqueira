@@ -1,26 +1,28 @@
-import torch
-from .secret_sharing import MODULUS, fixed_point_to_float
+"""
+Agregação SMPC (Camada 4): nós somam às cegas e o servidor revela apenas o agregado.
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+Fluxo: cliente k divide seu vetor ponderado em n partes e envia a parte j ao nó j;
+cada nó j soma (mod p) só as partes que recebeu; o servidor soma as n somas parciais e decodifica.
+"""
+
+import torch
+
+from .secret_sharing import MODULUS, decode_fixed_point
+
+
+def modular_sum(tensors):
+    """Soma reduzindo mod p a cada passo (parcelas < 2^61, logo somas intermediárias < 2^62)."""
+    total = torch.zeros_like(tensors[0])
+    for tensor in tensors:
+        total = torch.remainder(total + tensor, MODULUS)
+    return total
+
 
 class SMPCAggregator:
-    def agregar_shares(self, shares_dos_clientes):
-        num_clientes = len(shares_dos_clientes)
-        if num_clientes == 0: return None
-        
-        pesos_agregados = {}
-        chaves = shares_dos_clientes[0][0].keys()
-        
-        for key in chaves:
-            soma_total_int = 0
-            for cliente_shares in shares_dos_clientes:
-                for share in cliente_shares:
-                    if key in share:
-                        soma_total_int = torch.remainder(soma_total_int + share[key], MODULUS)
-                        
-            mask_negative = soma_total_int > (MODULUS // 2)
-            soma_total_int = torch.where(mask_negative, soma_total_int - MODULUS, soma_total_int)
-            soma_total_float = fixed_point_to_float(soma_total_int)
-            pesos_agregados[key] = (soma_total_float / num_clientes).to(device)
-            
-        return pesos_agregados
+    def partial_sum(self, received_shares):
+        """Executado por cada nó: soma das partes recebidas, que individualmente não revelam nada."""
+        return modular_sum(received_shares)
+
+    def reveal(self, partial_sums):
+        """Executado pelo servidor: soma das parciais e decodificação do agregado."""
+        return decode_fixed_point(modular_sum(partial_sums))

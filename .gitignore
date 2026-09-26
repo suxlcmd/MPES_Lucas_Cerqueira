@@ -17,3 +17,5 @@ venv/
 # Arquivos do sistema operacional
 .DS_Store
 Thumbs.db
+# Testes
+.pytest_cache/
