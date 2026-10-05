@@ -34,7 +34,7 @@ def _file_table(detalhes):
 
 
 def view_azure_manager():
-    page_header("☁️", "Azure Blob Storage", "Gestão de bases, checkpoints e artefatos do pipeline MPES.")
+    page_header("☁️", "Arquivos na nuvem", "Bases, modelos e relatórios guardados no Azure Blob Storage.")
     azure = get_azure_client()
 
     if not azure.available:

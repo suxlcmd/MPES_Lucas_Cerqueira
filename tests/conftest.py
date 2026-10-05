@@ -41,6 +41,29 @@ def make_paysim_like():
     return df
 
 
+def make_generic_like():
+    """Base genérica no estilo de sinistros de seguro: rótulo Y/N, categorias, identificador e data."""
+    rng = np.random.default_rng(2)
+    n = 900
+    fraude = rng.random(n) < 0.2
+    severidade = np.where(fraude & (rng.random(n) < 0.8), "Major Damage",
+                          rng.choice(["Minor Damage", "Total Loss", "Trivial Damage"], n))
+    return pd.DataFrame({
+        "policy_number": rng.permutation(np.arange(100000, 100000 + n)),
+        "incident_date": pd.date_range("2015-01-01", periods=n, freq="h").strftime("%Y-%m-%d"),
+        "age": rng.integers(19, 70, n),
+        "total_claim_amount": np.round(rng.lognormal(10, 0.6, n) * np.where(fraude, 1.6, 1.0)),
+        "incident_severity": severidade,
+        "insured_sex": rng.choice(["MALE", "FEMALE"], n),
+        "fraud_reported": np.where(fraude, "Y", "N"),
+    })
+
+
+@pytest.fixture
+def generic_like():
+    return make_generic_like()
+
+
 @pytest.fixture
 def creditcard_like():
     return make_creditcard_like()

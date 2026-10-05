@@ -54,7 +54,7 @@ def test_resultado_da_inferencia(bundle):
     df = make_creditcard_like().drop(columns=["Class"])
     resultado = score_transactions(bundle, df)
     tabela = resultado.table
-    for coluna in ["ID", "Escore de risco", "Nível de risco", "Alerta", "Fatores mais atípicos", "Status da análise"]:
+    for coluna in ["ID", "Escore de risco", "Nível de risco", "Alerta", "Por que foi marcada", "Status da análise"]:
         assert coluna in tabela
     assert set(tabela["Nível de risco"].astype(str)) <= set(RISK_LEVELS)
     assert resultado.summary["alerts"] == int(tabela["Alerta"].sum())
@@ -68,3 +68,61 @@ def test_treino_sem_rotulos_usa_quantil():
     assert bundle.threshold_strategy.startswith("Quantil")
     assert bundle.metrics["teste"] == {}
     assert 0.0 < bundle.metrics["taxa_alerta_teste"] < 0.05
+
+
+def test_qualidade_em_linguagem_simples(bundle):
+    from orchestration.training_service import quality_summary
+    nota, tipo, frases = quality_summary(bundle.metrics["teste"])
+    assert nota in {"Muito bom", "Bom", "Razoável", "Fraco"} and tipo in {"success", "warning", "danger"}
+    assert any("de cada 100 fraudes" in f for f in frases)
+    assert quality_summary({}) is None
+
+
+def test_motivos_legiveis():
+    from orchestration.inference_service import describe_deviation
+    assert describe_deviation("amount_log", 4.0) == "amount muito acima do comum"
+    assert describe_deviation("idade", -1.5) == "idade abaixo do comum"
+    assert describe_deviation("payment_type=AB", 2.0) == "payment_type = AB (pouco comum)"
+    assert describe_deviation("type_TRANSFER", 2.0) == "type = TRANSFER (pouco comum)"
+
+
+def test_base_generica_com_rotulo_em_texto():
+    from conftest import make_generic_like
+    df = make_generic_like()
+    bundle = run_training(df, "seguros.csv", "ghi789", SETTINGS, user="teste")
+    assert bundle.metadata["target"] == "fraud_reported" and bundle.metadata["labeled"]
+    assert {"policy_number", "incident_date"} <= set(bundle.metadata["dropped_columns"])
+    assert any(n.startswith("incident_severity=") for n in bundle.feature_names)
+    # Análise de um arquivo sem a coluna de fraude e com uma categoria nunca vista no treino
+    novo = df.drop(columns=["fraud_reported"]).head(30).copy()
+    novo.loc[novo.index[0], "incident_severity"] = "Categoria nova"
+    resultado = score_transactions(bundle, novo)
+    assert len(resultado.table) == 30 and resultado.metrics == {}
+
+
+def test_coluna_escolhida_pelo_usuario_e_base_sem_rotulo():
+    from conftest import make_generic_like
+    df = make_generic_like().rename(columns={"fraud_reported": "conferido"})
+    com_coluna = run_training(df, "a.csv", "1", SETTINGS, user="teste", target="conferido")
+    assert com_coluna.metadata["target"] == "conferido" and com_coluna.metadata["labeled"]
+    sem_rotulo = run_training(df, "b.csv", "2", SETTINGS, user="teste", target="")
+    assert not sem_rotulo.metadata["labeled"]
+
+
+def test_base_com_poucas_fraudes_gera_erro_claro():
+    df = make_creditcard_like()
+    df["Class"] = 0
+    df.loc[df.index[:2], "Class"] = 1
+    with pytest.raises(ValueError, match="menos de 5 fraudes"):
+        run_training(df, "poucas.csv", "3", SETTINGS, user="teste")
+
+
+def test_limiar_nao_fica_inutil():
+    """Se a precisão mínima só é atingida alertando quase nada, o limiar passa a equilibrar acertos e alarmes."""
+    from orchestration.training_service import calibrate_threshold
+    rng = np.random.default_rng(0)
+    y = np.r_[np.ones(50), np.zeros(950)].astype(int)
+    scores = np.r_[0.99, rng.uniform(0.3, 0.7, 49), rng.uniform(0.0, 0.7, 950)]  # só 1 fraude bem separada
+    limiar, estrategia = calibrate_threshold(y, scores, 0.70, 0.01)
+    assert estrategia.startswith("Máximo F1")
+    assert ((scores >= limiar) & (y == 1)).sum() / y.sum() >= 0.2

@@ -24,12 +24,14 @@ from orchestration.data_preprocessor import (
     SCHEMA_LABELS,
     DataPreprocessor,
     balance_sample,
+    limit_rows,
     split_train_val_test,
 )
 from orchestration.federated_coordinator import FederatedCoordinator
 from orchestration.model_bundle import ModelBundle
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
+MIN_USEFUL_RECALL = 0.20   # limiar que encontra menos de 20% das fraudes não serve à auditoria
 
 
 @dataclass
@@ -43,6 +45,7 @@ class TrainingSettings:
     min_precision: float = 0.70
     expected_alert_rate: float = 0.01
     seed: int = 42
+    max_rows: int = 150_000     # bases maiores viram uma amostra estratificada (treino em poucos minutos na nuvem)
 
 
 def calibrate_threshold(y_val, scores_val, min_precision, expected_alert_rate):
@@ -50,13 +53,15 @@ def calibrate_threshold(y_val, scores_val, min_precision, expected_alert_rate):
     if y_val is not None and len(np.unique(y_val)) == 2:
         precisions, recalls, thresholds = precision_recall_curve(y_val, scores_val)
         validos = np.where(precisions[:-1] >= min_precision)[0]
-        if len(validos) > 0:
+        if len(validos) > 0 and recalls[validos].max() >= MIN_USEFUL_RECALL:
             idx = validos[np.argmax(recalls[validos])]
             return float(thresholds[idx]), f"Maior recall com precisão ≥ {min_precision:.0%} na validação"
+        # Precisão mínima inalcançável ou só alcançada alertando quase nada: equilíbrio entre acertos e alarmes
         f1 = np.divide(2 * precisions * recalls, precisions + recalls,
                        out=np.zeros_like(precisions), where=(precisions + recalls) != 0)
         idx = int(np.argmax(f1[:-1]))
-        return float(thresholds[idx]), "Máximo F1 na validação (precisão mínima não atingida)"
+        motivo = "não atingida" if len(validos) == 0 else f"só atingida com recall < {MIN_USEFUL_RECALL:.0%}"
+        return float(thresholds[idx]), f"Máximo F1 na validação (precisão ≥ {min_precision:.0%} {motivo})"
     quantil = 1.0 - expected_alert_rate
     return float(np.quantile(scores_val, quantil)), f"Quantil {quantil:.1%} dos escores de validação (base sem rótulos)"
 
@@ -76,9 +81,37 @@ def classification_metrics(y_true, scores, threshold):
     }
 
 
-def run_training(df_raw, dataset_name, dataset_sha256, settings, progress=None, user="-"):
+def quality_summary(metrics):
+    """
+    Traduz as métricas do teste reservado para quem não é da área: nota do modelo e frases simples.
+    Devolve (nota, tipo do selo, frases) ou None quando a base não tem rótulos.
+    """
+    if not metrics:
+        return None
+    auc, recall, precisao = metrics["ROC-AUC"], metrics["Recall"], metrics["Precisão"]
+    if auc >= 0.90:
+        nota, tipo = "Muito bom", "success"
+    elif auc >= 0.80:
+        nota, tipo = "Bom", "success"
+    elif auc >= 0.70:
+        nota, tipo = "Razoável", "warning"
+    else:
+        nota, tipo = "Fraco", "danger"
+    frases = [
+        f"Em transações que o modelo não viu no treino, ele encontrou {recall * 100:.0f} de cada 100 fraudes.",
+        f"De cada 10 transações que ele marcou como suspeitas, {precisao * 10:.0f} eram fraude de fato."
+        if precisao > 0 else "Nenhuma transação foi marcada como suspeita nessa verificação.",
+    ]
+    if nota == "Fraco":
+        frases.append("Nesta base, as fraudes se parecem muito com transações normais: use os alertas como "
+                      "apoio e não como conclusão.")
+    return nota, tipo, frases
+
+
+def run_training(df_raw, dataset_name, dataset_sha256, settings, progress=None, user="-", target=None):
+    """target: coluna de fraude escolhida pelo usuário (None = detectar; "" = base sem rótulo)."""
     pre = DataPreprocessor()
-    _, features, y = pre.prepare(df_raw, training=True)
+    _, features, y = pre.prepare(df_raw, training=True, target=target)
     if features.shape[1] == 0:
         raise ValueError("Nenhuma coluna numérica utilizável foi encontrada na base.")
     rotulada = y is not None
@@ -87,6 +120,10 @@ def run_training(df_raw, dataset_name, dataset_sha256, settings, progress=None, 
 
     linhas_originais = len(features)
     features, y = balance_sample(features, y, settings.normals_per_fraud if rotulada else 0, settings.seed)
+    features, y = limit_rows(features, y, settings.max_rows, settings.seed)
+    if rotulada and y.sum() < 5:
+        raise ValueError("A base de treino tem menos de 5 fraudes marcadas: são poucos exemplos para o modelo "
+                         "aprender. Use uma base com mais fraudes ou escolha 'A base não indica fraude'.")
     X_train_df, X_val_df, X_test_df, y_train, y_val, y_test = split_train_val_test(
         features, y if rotulada else None, settings.seed
     )
@@ -148,6 +185,7 @@ def run_training(df_raw, dataset_name, dataset_sha256, settings, progress=None, 
             "schema_label": SCHEMA_LABELS.get(pre.schema, pre.schema),
             "target": pre.target or "-",
             "labeled": rotulada,
+            "dropped_columns": dict(pre.plan["dropped"]) if pre.plan else {},
             "rows_original": int(linhas_originais),
             "rows_used": int(len(features)),
             "frauds_used": int(np.asarray(y).sum()) if rotulada else 0,

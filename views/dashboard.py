@@ -89,7 +89,7 @@ def _privacidade(bundle):
 
 def _ultima_analise(inferencia):
     if not inferencia:
-        st.info("Execute uma análise de transações na subvisão de Treinamento e Inferência.")
+        st.info("Envie transações para análise no passo 2 da tela Detecção de fraudes.")
         return
     tabela = inferencia["result"].table
     col1, col2 = st.columns(2)
@@ -102,7 +102,7 @@ def _ultima_analise(inferencia):
         status = tabela.loc[tabela["Alerta"], "Status da análise"].value_counts().reindex(TRIAGE_STATUS, fill_value=0)
         st.bar_chart(status.rename("Alertas"), color=PRIMARY)
     st.markdown("**10 transações de maior risco**")
-    colunas = ["ID", "Escore de risco", "Nível de risco", "Fatores mais atípicos", "Status da análise"]
+    colunas = ["ID", "Escore de risco", "Nível de risco", "Por que foi marcada", "Status da análise"]
     st.dataframe(tabela.nlargest(10, "Escore de risco")[colunas], hide_index=True, width="stretch")
 
 
@@ -123,10 +123,10 @@ def _trilha():
 
 
 def view_dashboard():
-    page_header("📊", "Dashboard de Auditoria", "Desempenho do modelo, privacidade, alertas e trilha de auditoria.")
+    page_header("📊", "Detalhes técnicos", "Para especialistas: métricas do modelo, treinamento federado, SMPC e trilha de auditoria.")
     bundle = st.session_state.get("model_bundle")
     if bundle is None:
-        st.info("Nenhum modelo ativo. Treine ou carregue um modelo em Treinamento e Inferência.")
+        st.info("Nenhum modelo ativo. Treine ou carregue um modelo na tela Detecção de fraudes.")
         section_header("1", "Trilha de auditoria da sessão")
         _trilha()
         return

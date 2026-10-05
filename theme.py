@@ -406,6 +406,83 @@ def apply_theme():
         .stProgress > div > div > div > div {{
             background: var(--mpes-primary);
         }}
+
+        .mpes-steps {{
+            display: flex;
+            gap: 10px;
+            margin: -8px 0 22px 0;
+            flex-wrap: wrap;
+        }}
+
+        .mpes-step {{
+            flex: 1 1 200px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 14px;
+            border: 1px solid var(--mpes-border);
+            border-radius: 12px;
+            background: #FFFFFF;
+            color: var(--mpes-text-muted);
+            font-size: 13px;
+            font-weight: 650;
+        }}
+
+        .mpes-step .num {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: #E2E8F0;
+            color: var(--mpes-text-muted);
+            font-weight: 800;
+        }}
+
+        .mpes-step.done {{
+            border-color: #BBF7D0;
+            background: #F0FDF4;
+            color: var(--mpes-success);
+        }}
+
+        .mpes-step.done .num {{
+            background: var(--mpes-success);
+            color: #FFFFFF;
+        }}
+
+        .mpes-step.current {{
+            border-color: var(--mpes-primary);
+            color: var(--mpes-primary-dark);
+            box-shadow: 0 4px 14px rgba(29, 78, 216, 0.12);
+        }}
+
+        .mpes-step.current .num {{
+            background: var(--mpes-primary);
+            color: #FFFFFF;
+        }}
+
+        .mpes-headline {{
+            margin: 4px 0 16px 0;
+            padding: 18px 22px;
+            border: 1px solid var(--mpes-border);
+            border-left: 5px solid var(--mpes-primary);
+            border-radius: 12px;
+            background: #FFFFFF;
+            font-size: 18px;
+            line-height: 1.5;
+        }}
+
+        .mpes-headline.danger {{ border-left-color: var(--mpes-danger); }}
+        .mpes-headline.success {{ border-left-color: var(--mpes-success); }}
+        .mpes-headline.warning {{ border-left-color: var(--mpes-warning); }}
+
+        .mpes-headline small {{
+            display: block;
+            margin-top: 6px;
+            color: var(--mpes-text-muted);
+            font-size: 13px;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -507,3 +584,19 @@ def note(text: str, kind: str = "info"):
     """Renderiza uma nota explicativa curta (texto escapado)."""
     extra = " mpes-note-warning" if kind == "warning" else ""
     st.markdown(f'<div class="mpes-note{extra}">{esc(text)}</div>', unsafe_allow_html=True)
+
+
+def steps_bar(labels, current, done):
+    """Barra de progresso dos passos: `done` = quantos passos já foram concluídos; `current` = passo atual (1..n)."""
+    itens = []
+    for i, label in enumerate(labels, start=1):
+        estado = "done" if i <= done else "current" if i == current else ""
+        numero = "✓" if i <= done else str(i)
+        itens.append(f'<div class="mpes-step {estado}"><span class="num">{numero}</span>{esc(label)}</div>')
+    return f'<div class="mpes-steps">{"".join(itens)}</div>'
+
+
+def headline(text: str, detail: str = "", kind: str = "info"):
+    """Frase principal de um resultado, em destaque (texto escapado)."""
+    extra = f"<small>{esc(detail)}</small>" if detail else ""
+    st.markdown(f'<div class="mpes-headline {esc(kind)}">{esc(text)}{extra}</div>', unsafe_allow_html=True)

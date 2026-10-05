@@ -56,3 +56,34 @@ def test_amostragem_mantem_todas_as_fraudes(creditcard_like):
     _, features, y = pre.prepare(creditcard_like, training=True)
     f2, y2 = balance_sample(features, y, normals_per_fraud=5, seed=0)
     assert y2.sum() == y.sum() and len(y2) == y.sum() * 6
+
+
+def test_rotulos_em_texto_e_nomes_variados():
+    from orchestration.data_preprocessor import detect_target, encode_target
+    df = pd.DataFrame({"Is Fraudulent": [1, 0], "valor": [1.0, 2.0]})
+    assert detect_target(df) == "Is Fraudulent"
+    assert detect_target(pd.DataFrame({"FRAUD_BOOL": [0, 1]})) == "FRAUD_BOOL"
+    rotulos = encode_target(pd.Series(["Y", "N", "sim", "Não", "True", "?", None]))
+    assert rotulos.tolist()[:5] == [1, 0, 1, 0, 1] and rotulos[5:].isna().all()
+
+
+def test_plano_generico(generic_like):
+    pre = DataPreprocessor()
+    _, features, y = pre.prepare(generic_like, training=True)
+    assert pre.schema == "generic" and pre.target == "fraud_reported" and y.isin([0, 1]).all()
+    assert pre.plan["dropped"]["policy_number"] == "identificador"
+    assert pre.plan["dropped"]["incident_date"] == "data"
+    assert "total_claim_amount" in pre.plan["log"]
+    assert "incident_severity=Minor Damage" in features.columns
+    pre.fit(features)
+    restaurado = DataPreprocessor.from_dict(pre.to_dict())
+    _, f2, _ = restaurado.prepare(generic_like.drop(columns=["fraud_reported"]), training=False)
+    assert np.allclose(restaurado.transform(f2), pre.transform(features))
+    with pytest.raises(ValueError, match="incident_severity"):
+        restaurado.prepare(generic_like.drop(columns=["incident_severity"]), training=False)
+
+
+def test_candidatas_a_coluna_de_fraude(generic_like):
+    from orchestration.data_preprocessor import label_candidates
+    assert "fraud_reported" in label_candidates(generic_like)
+    assert "age" not in label_candidates(generic_like)

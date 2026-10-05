@@ -35,7 +35,7 @@ def _textos(at):
     return " ".join(m.value for m in at.markdown)
 
 
-@pytest.mark.parametrize("subvisao", ["training", "dashboard", "azure"])
+@pytest.mark.parametrize("subvisao", ["analise", "dashboard", "azure"])
 def test_subvisoes_sem_modelo(subvisao):
     _abrir(subvisao)
 
@@ -45,10 +45,20 @@ def test_cabecalho_nao_duplicado():
     assert _textos(at).count('class="mpes-page-header"') == 1
 
 
-def test_treinamento_com_modelo_ativo(estado_com_analise):
-    at = _abrir("training", estado_com_analise)
+def test_fluxo_guiado_com_resultados(estado_com_analise):
+    at = _abrir("analise", estado_com_analise)
     textos = _textos(at)
-    assert "MODELO ATIVO" in textos and "Fila de triagem dos alertas" in textos
+    assert "MODELO PRONTO" in textos and "Qualidade do modelo" in textos
+    assert "foram marcadas como suspeitas" in textos or "Nenhuma das" in textos
+    assert 'class="mpes-step done"' in textos
+    # Nenhum parâmetro de treinamento na tela principal
+    assert not at.slider and not at.number_input
+
+
+def test_fluxo_inicial_sem_modelo():
+    at = _abrir()
+    textos = _textos(at)
+    assert "Base de treino" in textos and "Primeiro treine o modelo" in " ".join(i.value for i in at.info)
 
 
 def test_dashboard_com_analise(estado_com_analise):
