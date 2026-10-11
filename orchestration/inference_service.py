@@ -29,8 +29,11 @@ def risk_levels(scores, threshold):
     )
 
 
+RARE_FREQUENCY = 0.05   # categoria (ou valor 0/1) presente em menos de 5% das transações normais = incomum
+
+
 def _readable_feature(name):
-    """'amount_log' -> 'amount'; 'type_TRANSFER' (PaySim) -> 'type = TRANSFER'."""
+    """'amount_log' -> 'amount'; 'payment_type=AB' -> ('payment_type', 'AB'); 'type_TRANSFER' (PaySim) -> 'type'."""
     if name.endswith("_log"):
         return name[:-4], None
     if "=" in name:
@@ -41,23 +44,55 @@ def _readable_feature(name):
     return name, None
 
 
-def describe_deviation(name, deviation):
-    """Frase curta para o auditor: em que a transação foge do perfil normal do treino."""
+def describe_deviation(name, deviation, categories=None, binary=False):
+    """
+    Frase curta para o auditor: em que a transação foge do perfil normal do treino.
+    categories: categorias da coluna (para dizer 'possui_nota_fiscal = Não' em vez de 'diferente de Sim').
+    """
     coluna, categoria = _readable_feature(name)
     if categoria is not None:
-        return f"{coluna} = {categoria} (pouco comum)" if deviation > 0 else f"{coluna} diferente de {categoria}"
+        if deviation > 0:
+            return f"{coluna} = {categoria} (pouco comum)"
+        outras = [c for c in (categories or []) if c != categoria]
+        return f"{coluna} = {outras[0]} (pouco comum)" if len(outras) == 1 else f"{coluna} diferente de {categoria}"
+    if binary:
+        return f"{coluna} com valor pouco comum"
     intensidade = "muito " if abs(deviation) >= 3 else ""
     return f"{coluna} {intensidade}{'acima' if deviation > 0 else 'abaixo'} do comum"
 
 
-def atypical_factors(X, reference, feature_names, top=3):
-    """Features mais distantes do perfil normal do treino (em intervalos interquartis), em linguagem simples."""
+def deviation_scores(X, reference):
+    """
+    Quanto cada valor foge do perfil normal do treino. Colunas numéricas: distância à mediana em intervalos
+    interquartis. Colunas de dois valores: raridade do valor entre as transações normais (0 se for comum).
+    """
     desvio = (X - np.asarray(reference["median"])) / np.asarray(reference["iqr"])
+    if "binary" not in reference:  # checkpoints antigos
+        return desvio
+    binaria = np.asarray(reference["binary"], dtype=bool)
+    estado_alto = X >= np.asarray(reference["high"]) - 1e-6
+    freq_alto = np.asarray(reference["freq_high"])
+    frequencia = np.clip(np.where(estado_alto, freq_alto, 1.0 - freq_alto), 1e-3, 1.0)
+    raridade = np.where(frequencia < RARE_FREQUENCY, -2.0 * np.log10(frequencia), 0.0)  # p=5% -> 2,6; p=0,1% -> 6
+    desvio[:, binaria] = (np.where(estado_alto, 1.0, -1.0) * raridade)[:, binaria]
+    return desvio
+
+
+def atypical_factors(X, reference, feature_names, top=3, categories=None):
+    """Features mais distantes do perfil normal do treino, em linguagem simples."""
+    desvio = deviation_scores(X, reference)
+    binaria = reference.get("binary", [False] * len(feature_names))
+    categorias = categories or {}
     ordem = np.argsort(-np.abs(desvio), axis=1)[:, :top]
     textos = []
     for linha, indices in zip(desvio, ordem):
-        partes = [describe_deviation(feature_names[i], linha[i]) for i in indices if abs(linha[i]) >= 1]
-        textos.append("; ".join(partes) if partes else "perfil próximo do normal")
+        partes = []
+        for i in indices:
+            if abs(linha[i]) < 1:
+                continue
+            coluna, _ = _readable_feature(feature_names[i])
+            partes.append(describe_deviation(feature_names[i], linha[i], categorias.get(coluna), binaria[i]))
+        textos.append("; ".join(partes) if partes else "combinação incomum de características")
     return textos
 
 
@@ -86,7 +121,9 @@ def score_transactions(bundle, df_raw):
     tabela["Escore de risco"] = np.round(scores * 100, 2)
     tabela["Nível de risco"] = pd.Categorical(niveis, categories=RISK_LEVELS, ordered=True)
     tabela["Alerta"] = scores >= bundle.threshold
-    tabela["Por que foi marcada"] = atypical_factors(X, bundle.reference, bundle.feature_names)
+    plano = bundle.preprocessor.get("plan") or {}
+    tabela["Por que foi marcada"] = atypical_factors(X, bundle.reference, bundle.feature_names,
+                                                     categories=plano.get("categorical"))
     tabela["Status da análise"] = "Pendente"
     tabela["Observação do auditor"] = ""
 

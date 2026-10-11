@@ -126,3 +126,20 @@ def test_limiar_nao_fica_inutil():
     limiar, estrategia = calibrate_threshold(y, scores, 0.70, 0.01)
     assert estrategia.startswith("Máximo F1")
     assert ((scores >= limiar) & (y == 1)).sum() / y.sum() >= 0.2
+
+
+def test_categoria_comum_nao_vira_motivo():
+    """Uma categoria frequente (ex.: 'dia = Sexta') não é motivo; uma rara (ex.: 'nota duplicada = Sim') é."""
+    from orchestration.inference_service import atypical_factors
+    # Escala (-1, 1) como no pré-processador: coluna 0 = categoria comum (30%), coluna 1 = indicador raro (1%)
+    referencia = {"median": [-1.0, -1.0], "iqr": [0.05, 0.05], "binary": [True, True], "high": [1.0, 1.0],
+                  "freq_high": [0.30, 0.01]}
+    nomes = ["dia_semana=Sexta", "nota_duplicada=Sim"]
+    X = np.array([[1.0, -1.0], [1.0, 1.0]])
+    motivos = atypical_factors(X, referencia, nomes, categories={"nota_duplicada": ["Não", "Sim"]})
+    assert motivos[0] == "combinação incomum de características"
+    assert motivos[1] == "nota_duplicada = Sim (pouco comum)"
+    # Valor ausente da categoria quase sempre presente vira "= outra categoria"
+    referencia["freq_high"] = [0.30, 0.99]
+    assert atypical_factors(np.array([[-1.0, -1.0]]), referencia, nomes,
+                            categories={"nota_duplicada": ["Não", "Sim"]})[0] == "nota_duplicada = Não (pouco comum)"

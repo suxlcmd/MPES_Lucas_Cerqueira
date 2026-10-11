@@ -154,9 +154,16 @@ def run_training(df_raw, dataset_name, dataset_sha256, settings, progress=None, 
 
     normais = X_train[y_train == 0] if (y_train == 0).any() else X_train
     q25, mediana, q75 = np.percentile(normais, [25, 50, 75], axis=0)
+    # Colunas com só dois valores (categorias em One-Hot, indicadores 0/1): o motivo usa a raridade do valor
+    # entre as transações normais, e não a distância em intervalos interquartis (que exageraria qualquer "1")
+    maximo = normais.max(axis=0)
+    binaria = [bool(np.unique(normais[:, j]).size <= 2) for j in range(normais.shape[1])]
     referencia = {
         "median": [float(v) for v in mediana],
         "iqr": [float(max(v, 0.05)) for v in (q75 - q25)],
+        "binary": binaria,
+        "high": [float(v) for v in maximo],
+        "freq_high": [float(v) for v in (normais >= maximo - 1e-6).mean(axis=0)],
     }
 
     agora = datetime.datetime.now(datetime.timezone.utc)
