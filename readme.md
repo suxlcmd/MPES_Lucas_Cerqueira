@@ -13,6 +13,7 @@ A solução permite que dados sensíveis sejam mantidos localmente, compartilhan
 - **SMPC:** campo Z_p com p = 2^61−1, ponto fixo com arredondamento (2^-24), checagem de estouro antes do compartilhamento e máscaras geradas por CSPRNG. Cada nó soma só as partes que recebe; o servidor vê apenas o agregado.
 - **Sem vazamento de dados:** split 60/20/20; scaler ajustado só no treino; limiar calibrado só na validação e salvo com o modelo; métricas reportadas no teste reservado.
 ## 🧭 Uso em 3 passos (para quem não é da área de dados)
+
 A tela **Detecção de fraudes** guia o auditor sem nenhum parâmetro técnico:
 1. **Base de treino:** envie um CSV com o histórico de transações. A coluna que indica fraude é detectada sozinha
    (`Class`, `isFraud`, `fraud_bool`, `fraud_reported`, `FraudFound_P`, `Is Fraudulent`..., inclusive com valores
