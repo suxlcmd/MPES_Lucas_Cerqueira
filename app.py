@@ -7,7 +7,7 @@ from theme import apply_theme, brand_block, esc
 from views.azure_manager import view_azure_manager
 from views.common import current_user
 from views.dashboard import view_dashboard
-from views.training import view_training
+from views.analise import view_analise
 
 st.set_page_config(
     page_title="MPES | Auditoria STEP-GAN",
@@ -19,9 +19,9 @@ st.set_page_config(
 apply_theme()
 
 SUBVIEWS = {
-    "training": {"label": "Treinamento e Inferência", "icon": "⚙️", "view": view_training},
-    "dashboard": {"label": "Dashboard de Auditoria", "icon": "📊", "view": view_dashboard},
-    "azure": {"label": "Azure Blob Storage", "icon": "☁️", "view": view_azure_manager},
+    "analise": {"label": "Detecção de fraudes", "icon": "🔎", "view": view_analise},
+    "dashboard": {"label": "Detalhes técnicos", "icon": "📊", "view": view_dashboard},
+    "azure": {"label": "Arquivos na nuvem", "icon": "☁️", "view": view_azure_manager},
 }
 
 

@@ -7,3 +7,4 @@ scikit-learn>=1.4
 torch>=2.3
 azure-storage-blob>=12.19
 python-dotenv>=1.0
+pytest>=8.0

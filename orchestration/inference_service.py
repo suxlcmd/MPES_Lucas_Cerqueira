@@ -29,14 +29,35 @@ def risk_levels(scores, threshold):
     )
 
 
+def _readable_feature(name):
+    """'amount_log' -> 'amount'; 'type_TRANSFER' (PaySim) -> 'type = TRANSFER'."""
+    if name.endswith("_log"):
+        return name[:-4], None
+    if "=" in name:
+        coluna, categoria = name.split("=", 1)
+        return coluna, categoria
+    if name.startswith("type_") and name[5:].isupper():
+        return "type", name[5:]
+    return name, None
+
+
+def describe_deviation(name, deviation):
+    """Frase curta para o auditor: em que a transação foge do perfil normal do treino."""
+    coluna, categoria = _readable_feature(name)
+    if categoria is not None:
+        return f"{coluna} = {categoria} (pouco comum)" if deviation > 0 else f"{coluna} diferente de {categoria}"
+    intensidade = "muito " if abs(deviation) >= 3 else ""
+    return f"{coluna} {intensidade}{'acima' if deviation > 0 else 'abaixo'} do comum"
+
+
 def atypical_factors(X, reference, feature_names, top=3):
-    """Features mais distantes do perfil normal do treino, em unidades de intervalo interquartil."""
+    """Features mais distantes do perfil normal do treino (em intervalos interquartis), em linguagem simples."""
     desvio = (X - np.asarray(reference["median"])) / np.asarray(reference["iqr"])
     ordem = np.argsort(-np.abs(desvio), axis=1)[:, :top]
     textos = []
     for linha, indices in zip(desvio, ordem):
-        partes = [f"{feature_names[i]} {'↑' if linha[i] > 0 else '↓'}{abs(linha[i]):.1f}" for i in indices]
-        textos.append(", ".join(partes))
+        partes = [describe_deviation(feature_names[i], linha[i]) for i in indices if abs(linha[i]) >= 1]
+        textos.append("; ".join(partes) if partes else "perfil próximo do normal")
     return textos
 
 
@@ -65,7 +86,7 @@ def score_transactions(bundle, df_raw):
     tabela["Escore de risco"] = np.round(scores * 100, 2)
     tabela["Nível de risco"] = pd.Categorical(niveis, categories=RISK_LEVELS, ordered=True)
     tabela["Alerta"] = scores >= bundle.threshold
-    tabela["Fatores mais atípicos"] = atypical_factors(X, bundle.reference, bundle.feature_names)
+    tabela["Por que foi marcada"] = atypical_factors(X, bundle.reference, bundle.feature_names)
     tabela["Status da análise"] = "Pendente"
     tabela["Observação do auditor"] = ""
 
