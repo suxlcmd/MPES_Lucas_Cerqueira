@@ -7,7 +7,7 @@ name: Build and deploy Python app to Azure Web App - aplicacaoauditoria
 on:
   push:
     branches:
-      - main
+      - 'main'
   workflow_dispatch:
 
 jobs:
@@ -63,9 +63,9 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_92CB2BAEE35F42569035F6592F09BCE4 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_1B92E3B2DCAD4C418ADE3613132BB73D }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_75ACFB197F05408DADFEB64F2B4E9C93 }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4A557AF181384F838348CB9CE8A8FBE0 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_64CF4E8949874417BB3B8AD0FC4511E3 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_CBA10B1E32E54340BC3144A91AD94553 }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
